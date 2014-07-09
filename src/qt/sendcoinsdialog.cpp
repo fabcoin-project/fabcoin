@@ -1,14 +1,12 @@
 #include "sendcoinsdialog.h"
 #include "ui_sendcoinsdialog.h"
 #include "walletmodel.h"
-#include "freicoinunits.h"
+#include "bitcoinunits.h"
 #include "addressbookpage.h"
 #include "optionsmodel.h"
 #include "sendcoinsentry.h"
 #include "guiutil.h"
 #include "askpassphrasedialog.h"
-#include "base58.h"
-#include "main.h"
 
 #include <QMessageBox>
 #include <QLocale>
@@ -22,7 +20,7 @@ SendCoinsDialog::SendCoinsDialog(QWidget *parent) :
 {
     ui->setupUi(this);
 
-#ifdef Q_OS_MAC // Icons on push buttons are very uncommon on Mac
+#ifdef Q_WS_MAC // Icons on push buttons are very uncommon on Mac
     ui->addButton->setIcon(QIcon());
     ui->clearButton->setIcon(QIcon());
     ui->sendButton->setIcon(QIcon());
@@ -40,8 +38,6 @@ void SendCoinsDialog::setModel(WalletModel *model)
 {
     this->model = model;
 
-    int nBlockheight = nBestHeight;
-
     for(int i = 0; i < ui->entries->count(); ++i)
     {
         SendCoinsEntry *entry = qobject_cast<SendCoinsEntry*>(ui->entries->itemAt(i)->widget());
@@ -52,8 +48,8 @@ void SendCoinsDialog::setModel(WalletModel *model)
     }
     if(model && model->getOptionsModel())
     {
-        setBalance(model->getBalance(nBlockheight), model->getUnconfirmedBalance(nBlockheight), model->getImmatureBalance(nBlockheight));
-        connect(model, SIGNAL(balanceChanged(const mpq&, const mpq&, const mpq&)), this, SLOT(setBalance(const mpq&, const mpq&, const mpq&)));
+        setBalance(model->getBalance(), model->getUnconfirmedBalance(), model->getImmatureBalance());
+        connect(model, SIGNAL(balanceChanged(qint64, qint64, qint64)), this, SLOT(setBalance(qint64, qint64, qint64)));
         connect(model->getOptionsModel(), SIGNAL(displayUnitChanged(int)), this, SLOT(updateDisplayUnit()));
     }
 }
@@ -96,7 +92,7 @@ void SendCoinsDialog::on_sendButton_clicked()
     QStringList formatted;
     foreach(const SendCoinsRecipient &rcp, recipients)
     {
-        formatted.append(tr("<b>%1</b> to %2 (%3)").arg(FreicoinUnits::formatWithUnit(FreicoinUnits::FRC, rcp.amount), Qt::escape(rcp.label), rcp.address));
+        formatted.append(tr("<b>%1</b> to %2 (%3)").arg(BitcoinUnits::formatWithUnit(BitcoinUnits::BTC, rcp.amount), Qt::escape(rcp.label), rcp.address));
     }
 
     fNewRecipientAllowed = false;
@@ -125,7 +121,7 @@ void SendCoinsDialog::on_sendButton_clicked()
     {
     case WalletModel::InvalidAddress:
         QMessageBox::warning(this, tr("Send Coins"),
-            tr("The recipient address is not valid, please recheck."),
+            tr("The recepient address is not valid, please recheck."),
             QMessageBox::Ok, QMessageBox::Ok);
         break;
     case WalletModel::InvalidAmount:
@@ -141,7 +137,7 @@ void SendCoinsDialog::on_sendButton_clicked()
     case WalletModel::AmountWithFeeExceedsBalance:
         QMessageBox::warning(this, tr("Send Coins"),
             tr("The total exceeds your balance when the %1 transaction fee is included.").
-            arg(FreicoinUnits::formatWithUnit(FreicoinUnits::FRC, sendstatus.fee)),
+            arg(BitcoinUnits::formatWithUnit(BitcoinUnits::BTC, sendstatus.fee)),
             QMessageBox::Ok, QMessageBox::Ok);
         break;
     case WalletModel::DuplicateAddress:
@@ -275,11 +271,8 @@ bool SendCoinsDialog::handleURI(const QString &uri)
 {
     SendCoinsRecipient rv;
     // URI has to be valid
-    if (GUIUtil::parseFreicoinURI(uri, &rv))
+    if (GUIUtil::parseBitcoinURI(uri, &rv))
     {
-        CFreicoinAddress address(rv.address.toStdString());
-        if (!address.IsValid())
-            return false;
         pasteEntry(rv);
         return true;
     }
@@ -287,7 +280,7 @@ bool SendCoinsDialog::handleURI(const QString &uri)
     return false;
 }
 
-void SendCoinsDialog::setBalance(const mpq& balance, const mpq& unconfirmedBalance, const mpq& immatureBalance)
+void SendCoinsDialog::setBalance(qint64 balance, qint64 unconfirmedBalance, qint64 immatureBalance)
 {
     Q_UNUSED(unconfirmedBalance);
     Q_UNUSED(immatureBalance);
@@ -295,7 +288,7 @@ void SendCoinsDialog::setBalance(const mpq& balance, const mpq& unconfirmedBalan
         return;
 
     int unit = model->getOptionsModel()->getDisplayUnit();
-    ui->labelBalance->setText(FreicoinUnits::formatWithUnit(unit, RoundAbsolute(balance, ROUND_TOWARDS_ZERO)));
+    ui->labelBalance->setText(BitcoinUnits::formatWithUnit(unit, balance));
 }
 
 void SendCoinsDialog::updateDisplayUnit()
@@ -303,6 +296,6 @@ void SendCoinsDialog::updateDisplayUnit()
     if(model && model->getOptionsModel())
     {
         // Update labelBalance with the current balance and the current unit
-        ui->labelBalance->setText(FreicoinUnits::formatWithUnit(model->getOptionsModel()->getDisplayUnit(), RoundAbsolute(model->getBalance(nBestHeight), ROUND_TOWARDS_ZERO)));
+        ui->labelBalance->setText(BitcoinUnits::formatWithUnit(model->getOptionsModel()->getDisplayUnit(), model->getBalance()));
     }
 }

@@ -1,9 +1,10 @@
 // Copyright (c) 2009-2012 Bitcoin Developers
+// Copyright (c) 2011-2012 Fabcoin Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "net.h"
-#include "freicoinrpc.h"
+#include "bitcoinrpc.h"
 
 using namespace json_spirit;
 using namespace std;
@@ -61,7 +62,7 @@ Value getpeerinfo(const Array& params, bool fHelp)
 
         ret.push_back(obj);
     }
-
+    
     return ret;
 }
 

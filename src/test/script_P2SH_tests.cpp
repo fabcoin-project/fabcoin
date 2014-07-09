@@ -38,7 +38,7 @@ Verify(const CScript& scriptSig, const CScript& scriptPubKey, bool fStrict)
     txTo.vin[0].prevout.n = 0;
     txTo.vin[0].prevout.hash = txFrom.GetHash();
     txTo.vin[0].scriptSig = scriptSig;
-    txTo.vout[0].SetInitialValue(1);
+    txTo.vout[0].nValue = 1;
 
     return VerifyScript(scriptSig, scriptPubKey, txTo, 0, fStrict, 0);
 }
@@ -91,7 +91,7 @@ BOOST_AUTO_TEST_CASE(sign)
         txTo[i].vout.resize(1);
         txTo[i].vin[0].prevout.n = i;
         txTo[i].vin[0].prevout.hash = txFrom.GetHash();
-        txTo[i].vout[0].SetInitialValue(1);
+        txTo[i].vout[0].nValue = 1;
         BOOST_CHECK_MESSAGE(IsMine(keystore, txFrom.vout[i].scriptPubKey), strprintf("IsMine %d", i));
     }
     for (int i = 0; i < 8; i++)
@@ -130,7 +130,7 @@ BOOST_AUTO_TEST_CASE(norecurse)
     // Should not verify, because it will try to execute OP_INVALIDOPCODE
     BOOST_CHECK(!Verify(scriptSig, p2sh, true));
 
-    // Try to recur, and verification should succeed because
+    // Try to recurse, and verification should succeed because
     // the inner HASH160 <> EQUAL should only check the hash:
     CScript p2sh2;
     p2sh2.SetDestination(p2sh.GetID());
@@ -181,7 +181,7 @@ BOOST_AUTO_TEST_CASE(set)
         txTo[i].vout.resize(1);
         txTo[i].vin[0].prevout.n = i;
         txTo[i].vin[0].prevout.hash = txFrom.GetHash();
-        txTo[i].vout[0].SetInitialValue(1);
+        txTo[i].vout[0].nValue = 1;
         txTo[i].vout[0].scriptPubKey = inner[i];
         BOOST_CHECK_MESSAGE(IsMine(keystore, txFrom.vout[i].scriptPubKey), strprintf("IsMine %d", i));
     }
@@ -225,7 +225,7 @@ BOOST_AUTO_TEST_CASE(is)
 
 BOOST_AUTO_TEST_CASE(switchover)
 {
-    // Test switch over code
+    // Test switchover code
     CScript notValid;
     notValid << OP_11 << OP_12 << OP_EQUALVERIFY;
     CScript scriptSig;

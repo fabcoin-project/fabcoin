@@ -9,8 +9,18 @@ bool TransactionRecord::showTransaction(const CWalletTx &wtx)
 {
     if (wtx.IsCoinBase())
     {
-        // Ensures we show generated coins / mined transactions at depth 1
-        if (!wtx.IsInMainChain())
+        // Don't show generated coin until confirmed by at least one block after it
+        // so we don't get the user's hopes up until it looks like it's probably accepted.
+        //
+        // It is not an error when generated blocks are not accepted.  By design,
+        // some percentage of blocks, like 10% or more, will end up not accepted.
+        // This is the normal mechanism by which the network copes with latency.
+        //
+        // We display regular transactions right away before any confirmation
+        // because they can always get into some block eventually.  Generated coins
+        // are special because if their block is not accepted, they are not valid.
+        //
+        if (wtx.GetDepthInMainChain() < 2)
         {
             return false;
         }
@@ -25,9 +35,9 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
 {
     QList<TransactionRecord> parts;
     int64 nTime = wtx.GetTxTime();
-    mpq nCredit = wtx.GetCredit(wtx.nRefHeight, true);
-    mpq nDebit = wtx.GetDebit(wtx.nRefHeight);
-    mpq nNet = nCredit - nDebit;
+    int64 nCredit = wtx.GetCredit(true);
+    int64 nDebit = wtx.GetDebit();
+    int64 nNet = nCredit - nDebit;
     uint256 hash = wtx.GetHash();
     std::map<std::string, std::string> mapValue = wtx.mapValue;
 
@@ -43,12 +53,17 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
                 TransactionRecord sub(hash, nTime);
                 CTxDestination address;
                 sub.idx = parts.size(); // sequence number
-                sub.credit = GetPresentValue(wtx, txout, wtx.nRefHeight);
-                if (ExtractDestination(txout.scriptPubKey, address) && IsMine(*wallet, address))
+                sub.credit = txout.nValue;
+                if (wtx.IsCoinBase())
                 {
-                    // Received by Freicoin Address
+                    // Generated
+                    sub.type = TransactionRecord::Generated;
+                }
+                else if (ExtractDestination(txout.scriptPubKey, address) && IsMine(*wallet, address))
+                {
+                    // Received by Bitcoin Address
                     sub.type = TransactionRecord::RecvWithAddress;
-                    sub.address = CFreicoinAddress(address).ToString();
+                    sub.address = CBitcoinAddress(address).ToString();
                 }
                 else
                 {
@@ -56,13 +71,6 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
                     sub.type = TransactionRecord::RecvFromOther;
                     sub.address = mapValue["from"];
                 }
-                if (wtx.IsCoinBase())
-                {
-                    // Generated
-                    sub.type = TransactionRecord::Generated;
-                }
-
-                sub.refheight = wtx.nRefHeight;
 
                 parts.append(sub);
             }
@@ -81,19 +89,17 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
         if (fAllFromMe && fAllToMe)
         {
             // Payment to self
-            mpq nChange = wtx.GetChange(wtx.nRefHeight);
-            mpq debit = -(nDebit - nChange);
-            mpq credit = nCredit - nChange;
+            int64 nChange = wtx.GetChange();
 
             parts.append(TransactionRecord(hash, nTime, TransactionRecord::SendToSelf, "",
-                         debit, credit, wtx.nRefHeight));
+                            -(nDebit - nChange), nCredit - nChange));
         }
         else if (fAllFromMe)
         {
             //
             // Debit
             //
-            mpq nTxFee = nDebit - wtx.GetValueOut();
+            int64 nTxFee = nDebit - wtx.GetValueOut();
 
             for (unsigned int nOut = 0; nOut < wtx.vout.size(); nOut++)
             {
@@ -111,9 +117,9 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
                 CTxDestination address;
                 if (ExtractDestination(txout.scriptPubKey, address))
                 {
-                    // Sent to Freicoin Address
+                    // Sent to Bitcoin Address
                     sub.type = TransactionRecord::SendToAddress;
-                    sub.address = CFreicoinAddress(address).ToString();
+                    sub.address = CBitcoinAddress(address).ToString();
                 }
                 else
                 {
@@ -122,7 +128,7 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
                     sub.address = mapValue["to"];
                 }
 
-                mpq nValue = GetPresentValue(wtx, txout, wtx.nRefHeight);
+                int64 nValue = txout.nValue;
                 /* Add fee to first output */
                 if (nTxFee > 0)
                 {
@@ -130,8 +136,6 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
                     nTxFee = 0;
                 }
                 sub.debit = -nValue;
-
-                sub.refheight = wtx.nRefHeight;
 
                 parts.append(sub);
             }
@@ -141,7 +145,7 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
             //
             // Mixed debit transaction, can't break down payees
             //
-            parts.append(TransactionRecord(hash, nTime, TransactionRecord::Other, "", nNet, 0, wtx.nRefHeight));
+            parts.append(TransactionRecord(hash, nTime, TransactionRecord::Other, "", nNet, 0));
         }
     }
 
@@ -200,7 +204,7 @@ void TransactionRecord::updateStatus(const CWalletTx &wtx)
     // For generated transactions, determine maturity
     if(type == TransactionRecord::Generated)
     {
-        mpq nCredit = wtx.GetCredit(wtx.nRefHeight, true);
+        int64 nCredit = wtx.GetCredit(true);
         if (nCredit == 0)
         {
             status.maturity = TransactionStatus::Immature;

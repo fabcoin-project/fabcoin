@@ -1,4 +1,5 @@
 // Copyright (c) 2009-2012 The Bitcoin developers
+// Copyright (c) 2011-2012 Fabcoin Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -22,38 +23,34 @@ namespace Checkpoints
     // + Contains no strange transactions
     //
     static MapCheckpoints mapCheckpoints =
-        boost::assign::map_list_of
-        (10080, uint256("0x00000000003ff9c4b806639ec4376cc9acafcdded0e18e9dbcc2fc42e8e72331"))
-        (20160, uint256("0x0000000000009708ba48a52599295db8b9ec5d29148561e6ac850af765026528"))
-        (28336, uint256("0x000000000000cc374a984c0deec9aed6fff764918e2cfd4be6670dd4d5292ccb"))
-        ;
-
-    static MapCheckpoints mapCheckpointsTestnet =
-        boost::assign::map_list_of
-        (0, uint256("0x000000005d7230f40e4d683770d0e962ecbf90275468b6e9533fb5be06a66c75"))
+        boost::assign::map_list_of // TODO: needs to adjusted for checkpoint checks, also see main.cpp
+        (         1, uint256("0xf2449e84c911aabb5389d2460ad3d4fd171c87bbdff45b65cb55713728e598f8"))
+        (         2, uint256("0x43682e5929c9234209db6592953347aa8b4c8e233692369a61b4780b80835c42"))
+        (     34336, uint256("0xfc6a3ee59b9f2429114178ff7a4792a7af102688156d26a3edbb90c243850dcd"))
+        (     50000, uint256("0x5fa3d8bb008a55a1b6e301b435be3a68985083435748b913ef8572bf1282303c"))
+        (     70000, uint256("0x7ee7864ffec5a23f526e01a1388a6e988d2773365522e04dd51d3c71c19b459f"))
         ;
 
     bool CheckBlock(int nHeight, const uint256& hash)
     {
-        MapCheckpoints& checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
+        if (fTestNet) return true; // Testnet has no checkpoints
 
-        MapCheckpoints::const_iterator i = checkpoints.find(nHeight);
-        if (i == checkpoints.end()) return true;
+        MapCheckpoints::const_iterator i = mapCheckpoints.find(nHeight);
+        if (i == mapCheckpoints.end()) return true;
         return hash == i->second;
     }
 
     int GetTotalBlocksEstimate()
     {
-        MapCheckpoints& checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
-
-        return checkpoints.rbegin()->first;
+        if (fTestNet) return 0;
+        return mapCheckpoints.rbegin()->first;
     }
 
     CBlockIndex* GetLastCheckpoint(const std::map<uint256, CBlockIndex*>& mapBlockIndex)
     {
-        MapCheckpoints& checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
+        if (fTestNet) return NULL;
 
-        BOOST_REVERSE_FOREACH(const MapCheckpoints::value_type& i, checkpoints)
+        BOOST_REVERSE_FOREACH(const MapCheckpoints::value_type& i, mapCheckpoints)
         {
             const uint256& hash = i.second;
             std::map<uint256, CBlockIndex*>::const_iterator t = mapBlockIndex.find(hash);

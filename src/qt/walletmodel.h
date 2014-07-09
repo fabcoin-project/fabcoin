@@ -4,7 +4,6 @@
 #include <QObject>
 
 #include "allocators.h" /* for SecureString */
-#include "bignum.h" // for mpq
 
 class OptionsModel;
 class AddressTableModel;
@@ -20,10 +19,10 @@ class SendCoinsRecipient
 public:
     QString address;
     QString label;
-    mpq amount;
+    qint64 amount;
 };
 
-/** Interface to Freicoin wallet from Qt view code. */
+/** Interface to Bitcoin wallet from Qt view code. */
 class WalletModel : public QObject
 {
     Q_OBJECT
@@ -55,9 +54,9 @@ public:
     AddressTableModel *getAddressTableModel();
     TransactionTableModel *getTransactionTableModel();
 
-    mpq getBalance(int nBlockHeight) const;
-    mpq getUnconfirmedBalance(int nBlockHeight) const;
-    mpq getImmatureBalance(int nBlockHeight) const;
+    qint64 getBalance() const;
+    qint64 getUnconfirmedBalance() const;
+    qint64 getImmatureBalance() const;
     int getNumTransactions() const;
     EncryptionStatus getEncryptionStatus() const;
 
@@ -68,16 +67,16 @@ public:
     struct SendCoinsReturn
     {
         SendCoinsReturn(StatusCode status,
-                         const mpq& fee=0,
+                         qint64 fee=0,
                          QString hex=QString()):
             status(status), fee(fee), hex(hex) {}
         StatusCode status;
-        mpq fee; // is used in case status is "AmountWithFeeExceedsBalance"
+        qint64 fee; // is used in case status is "AmountWithFeeExceedsBalance"
         QString hex; // is filled with the transaction hash if status is "OK"
     };
 
     // Send coins to a list of recipients
-    SendCoinsReturn sendCoins(const QList<SendCoinsRecipient> &recipients, int nRefHeight=-1);
+    SendCoinsReturn sendCoins(const QList<SendCoinsRecipient> &recipients);
 
     // Wallet encryption
     bool setWalletEncrypted(bool encrypted, const SecureString &passphrase);
@@ -120,9 +119,9 @@ private:
     TransactionTableModel *transactionTableModel;
 
     // Cache some values to be able to detect changes
-    mpq cachedBalance;
-    mpq cachedUnconfirmedBalance;
-    mpq cachedImmatureBalance;
+    qint64 cachedBalance;
+    qint64 cachedUnconfirmedBalance;
+    qint64 cachedImmatureBalance;
     qint64 cachedNumTransactions;
     EncryptionStatus cachedEncryptionStatus;
     int cachedNumBlocks;
@@ -135,7 +134,7 @@ private:
 
 signals:
     // Signal that balance in wallet changed
-    void balanceChanged(const mpq& balance, const mpq& unconfirmedBalance, const mpq& immatureBalance);
+    void balanceChanged(qint64 balance, qint64 unconfirmedBalance, qint64 immatureBalance);
 
     // Number of transactions in wallet changed
     void numTransactionsChanged(int count);

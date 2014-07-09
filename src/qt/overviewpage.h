@@ -1,8 +1,6 @@
 #ifndef OVERVIEWPAGE_H
 #define OVERVIEWPAGE_H
 
-#include "util.h" // mpq
-
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
@@ -29,7 +27,7 @@ public:
     void showOutOfSyncWarning(bool fShow);
 
 public slots:
-    void setBalance(const mpq& balance, const mpq& unconfirmedBalance, const mpq& immatureBalance);
+    void setBalance(qint64 balance, qint64 unconfirmedBalance, qint64 immatureBalance);
     void setNumTransactions(int count);
 
 signals:
@@ -38,9 +36,9 @@ signals:
 private:
     Ui::OverviewPage *ui;
     WalletModel *model;
-    mpq currentBalance;
-    mpq currentUnconfirmedBalance;
-    mpq currentImmatureBalance;
+    qint64 currentBalance;
+    qint64 currentUnconfirmedBalance;
+    qint64 currentImmatureBalance;
 
     TxViewDelegate *txdelegate;
     TransactionFilterProxy *filter;

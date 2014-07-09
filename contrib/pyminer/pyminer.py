@@ -2,7 +2,7 @@
 #
 # Copyright (c) 2011 The Bitcoin developers
 # Distributed under the MIT/X11 software license, see the accompanying
-# file COPYING or http://www.opensource.org/licenses/mit-license.php.
+# file license.txt or http://www.opensource.org/licenses/mit-license.php.
 #
 
 import time
@@ -22,7 +22,7 @@ MAX_NONCE = 1000000L
 settings = {}
 pp = pprint.PrettyPrinter(indent=4)
 
-class FreicoinRPC:
+class BitcoinRPC:
 	OBJID = 1
 
 	def __init__(self, host, port, username, password):
@@ -183,7 +183,7 @@ class Miner:
 			self.submit_work(rpc, work['data'], nonce_bin)
 
 	def loop(self):
-		rpc = FreicoinRPC(settings['host'], settings['port'],
+		rpc = BitcoinRPC(settings['host'], settings['port'],
 				 settings['rpcuser'], settings['rpcpass'])
 		if rpc is None:
 			return
@@ -217,7 +217,7 @@ if __name__ == '__main__':
 	if 'host' not in settings:
 		settings['host'] = '127.0.0.1'
 	if 'port' not in settings:
-		settings['port'] = 8638
+		settings['port'] = 8332
 	if 'threads' not in settings:
 		settings['threads'] = 1
 	if 'hashmeter' not in settings:

@@ -3,7 +3,7 @@
 
 #include "base58.h"
 #include "util.h"
-#include "freicoinrpc.h"
+#include "bitcoinrpc.h"
 
 using namespace std;
 using namespace json_spirit;
@@ -17,12 +17,19 @@ createArgs(int nRequired, const char* address1=NULL, const char* address2=NULL)
     result.push_back(nRequired);
     Array addresses;
     if (address1) addresses.push_back(address1);
-    if (address2) addresses.push_back(address2);
+    if (address2) addresses.push_back(address1);
     result.push_back(addresses);
     return result;
 }
 
-BOOST_AUTO_TEST_CASE(rpc_addmultisig)
+// This can be removed this when addmultisigaddress is enabled on main net:
+struct TestNetFixture
+{
+    TestNetFixture() { fTestNet = true; }
+    ~TestNetFixture() { fTestNet = false; }
+};
+
+BOOST_FIXTURE_TEST_CASE(rpc_addmultisig, TestNetFixture)
 {
     rpcfn_type addmultisig = tableRPC["addmultisigaddress"]->actor;
 
@@ -32,7 +39,7 @@ BOOST_AUTO_TEST_CASE(rpc_addmultisig)
     const char address2Hex[] = "0388c2037017c62240b6b72ac1a2a5f94da790596ebd06177c8572752922165cb4";
 
     Value v;
-    CFreicoinAddress address;
+    CBitcoinAddress address;
     BOOST_CHECK_NO_THROW(v = addmultisig(createArgs(1, address1Hex), false));
     address.SetString(v.get_str());
     BOOST_CHECK(address.IsValid() && address.IsScript());

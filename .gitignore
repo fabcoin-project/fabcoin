@@ -1,7 +1,7 @@
 src/*.exe
-src/fabcoin
-src/fabcoind
-src/test_fabcoin
+src/Fabcoin
+src/Fabcoind
+src/test_Fabcoin
 .*.swp
 *.*~*
 *.bak
@@ -9,11 +9,11 @@ src/test_fabcoin
 *.orig
 *.o
 *.patch
-.fabcoin
+.Fabcoin
 #compilation and Qt preprocessor part
 *.qm
 Makefile
-fabcoin-qt
+Fabcoin-qt
 #resources cpp
 qrc_*.cpp
 #qt creator

@@ -2,14 +2,12 @@
 #include "ui_overviewpage.h"
 
 #include "walletmodel.h"
-#include "freicoinunits.h"
+#include "bitcoinunits.h"
 #include "optionsmodel.h"
 #include "transactiontablemodel.h"
 #include "transactionfilterproxy.h"
 #include "guiutil.h"
 #include "guiconstants.h"
-
-#include "main.h"
 
 #include <QAbstractItemDelegate>
 #include <QPainter>
@@ -21,7 +19,7 @@ class TxViewDelegate : public QAbstractItemDelegate
 {
     Q_OBJECT
 public:
-    TxViewDelegate(): QAbstractItemDelegate(), unit(FreicoinUnits::FRC)
+    TxViewDelegate(): QAbstractItemDelegate(), unit(BitcoinUnits::BTC)
     {
 
     }
@@ -43,7 +41,7 @@ public:
 
         QDateTime date = index.data(TransactionTableModel::DateRole).toDateTime();
         QString address = index.data(Qt::DisplayRole).toString();
-        mpq amount; ParseMoney(index.data(TransactionTableModel::AmountRole).toString().toStdString(), amount);
+        qint64 amount = index.data(TransactionTableModel::AmountRole).toLongLong();
         bool confirmed = index.data(TransactionTableModel::ConfirmedRole).toBool();
         QVariant value = index.data(Qt::ForegroundRole);
         QColor foreground = option.palette.color(QPalette::Text);
@@ -68,7 +66,7 @@ public:
             foreground = option.palette.color(QPalette::Text);
         }
         painter->setPen(foreground);
-        QString amountText = FreicoinUnits::formatWithUnit(unit, RoundAbsolute(amount, ROUND_TOWARDS_ZERO), true);
+        QString amountText = BitcoinUnits::formatWithUnit(unit, amount, true);
         if(!confirmed)
         {
             amountText = QString("[") + amountText + QString("]");
@@ -111,8 +109,8 @@ OverviewPage::OverviewPage(QWidget *parent) :
     connect(ui->listTransactions, SIGNAL(clicked(QModelIndex)), this, SLOT(handleTransactionClicked(QModelIndex)));
 
     // init "out of sync" warning labels
-    ui->labelWalletStatus->setText("(" + tr("out of sync") + ")");
-    ui->labelTransactionsStatus->setText("(" + tr("out of sync") + ")");
+    ui->labelWalletStatus->setText("(" + tr("Out of sync") + ")");
+    ui->labelTransactionsStatus->setText("(" + tr("Out of sync") + ")");
 
     // start with displaying the "out of sync" warnings
     showOutOfSyncWarning(true);
@@ -129,15 +127,15 @@ OverviewPage::~OverviewPage()
     delete ui;
 }
 
-void OverviewPage::setBalance(const mpq& balance, const mpq& unconfirmedBalance, const mpq& immatureBalance)
+void OverviewPage::setBalance(qint64 balance, qint64 unconfirmedBalance, qint64 immatureBalance)
 {
     int unit = model->getOptionsModel()->getDisplayUnit();
     currentBalance = balance;
     currentUnconfirmedBalance = unconfirmedBalance;
     currentImmatureBalance = immatureBalance;
-    ui->labelBalance->setText(FreicoinUnits::formatWithUnit(unit, RoundAbsolute(balance, ROUND_TOWARDS_ZERO)));
-    ui->labelUnconfirmed->setText(FreicoinUnits::formatWithUnit(unit, RoundAbsolute(unconfirmedBalance, ROUND_TOWARDS_ZERO)));
-    ui->labelImmature->setText(FreicoinUnits::formatWithUnit(unit, RoundAbsolute(immatureBalance, ROUND_TOWARDS_ZERO)));
+    ui->labelBalance->setText(BitcoinUnits::formatWithUnit(unit, balance));
+    ui->labelUnconfirmed->setText(BitcoinUnits::formatWithUnit(unit, unconfirmedBalance));
+    ui->labelImmature->setText(BitcoinUnits::formatWithUnit(unit, immatureBalance));
 
     // only show immature (newly mined) balance if it's non-zero, so as not to complicate things
     // for the non-mining users
@@ -167,11 +165,9 @@ void OverviewPage::setModel(WalletModel *model)
         ui->listTransactions->setModel(filter);
         ui->listTransactions->setModelColumn(TransactionTableModel::ToAddress);
 
-        int nBlockHeight = nBestHeight;
-
         // Keep up to date with wallet
-        setBalance(model->getBalance(nBlockHeight), model->getUnconfirmedBalance(nBlockHeight), model->getImmatureBalance(nBlockHeight));
-        connect(model, SIGNAL(balanceChanged(const mpq&, const mpq&, const mpq&)), this, SLOT(setBalance(const mpq&, const mpq&, const mpq&)));
+        setBalance(model->getBalance(), model->getUnconfirmedBalance(), model->getImmatureBalance());
+        connect(model, SIGNAL(balanceChanged(qint64, qint64, qint64)), this, SLOT(setBalance(qint64, qint64, qint64)));
 
         setNumTransactions(model->getNumTransactions());
         connect(model, SIGNAL(numTransactionsChanged(int)), this, SLOT(setNumTransactions(int)));
@@ -179,7 +175,7 @@ void OverviewPage::setModel(WalletModel *model)
         connect(model->getOptionsModel(), SIGNAL(displayUnitChanged(int)), this, SLOT(updateDisplayUnit()));
     }
 
-    // update the display unit, to not use the default ("FRC")
+    // update the display unit, to not use the default ("SMC")
     updateDisplayUnit();
 }
 

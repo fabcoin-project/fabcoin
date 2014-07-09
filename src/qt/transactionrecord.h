@@ -1,7 +1,6 @@
 #ifndef TRANSACTIONRECORD_H
 #define TRANSACTIONRECORD_H
 
-#include "bignum.h" // for mpq
 #include "uint256.h"
 
 #include <QList>
@@ -76,21 +75,21 @@ public:
     static const int NumConfirmations = 6;
 
     TransactionRecord():
-            hash(), time(0), type(Other), address(""), debit(0), credit(0), refheight(0), idx(0)
+            hash(), time(0), type(Other), address(""), debit(0), credit(0), idx(0)
     {
     }
 
     TransactionRecord(uint256 hash, int64 time):
             hash(hash), time(time), type(Other), address(""), debit(0),
-            credit(0), refheight(0), idx(0)
+            credit(0), idx(0)
     {
     }
 
     TransactionRecord(uint256 hash, int64 time,
                 Type type, const std::string &address,
-                const mpq& debit, const mpq& credit, int refheight):
+                int64 debit, int64 credit):
             hash(hash), time(time), type(type), address(address), debit(debit), credit(credit),
-            refheight(refheight), idx(0)
+            idx(0)
     {
     }
 
@@ -105,9 +104,8 @@ public:
     int64 time;
     Type type;
     std::string address;
-    mpq debit;
-    mpq credit;
-    int refheight;
+    int64 debit;
+    int64 credit;
     /**@}*/
 
     /** Subtransaction index, for sort key */

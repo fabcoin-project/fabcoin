@@ -1,11 +1,9 @@
 #ifndef OPTIONSMODEL_H
 #define OPTIONSMODEL_H
 
-#include "bignum.h" // for mpq
-
 #include <QAbstractListModel>
 
-/** Interface from Qt to configuration data structure for Freicoin client.
+/** Interface from Qt to configuration data structure for Bitcoin client.
    To Qt, the options are presented as a list with the different options
    laid out vertically.
    This can be changed to a tree once the settings become sufficiently
@@ -27,8 +25,8 @@ public:
         ProxyIP,           // QString
         ProxyPort,         // int
         ProxySocksVersion, // int
-        Fee,               // mpq serialized as QString
-        DisplayUnit,       // FreicoinUnits::Unit
+        Fee,               // qint64
+        DisplayUnit,       // BitcoinUnits::Unit
         DisplayAddresses,  // bool
         DetachDatabases,   // bool
         Language,          // QString
@@ -45,11 +43,11 @@ public:
     bool setData(const QModelIndex & index, const QVariant & value, int role = Qt::EditRole);
 
     /* Explicit getters */
-    mpq getTransactionFee();
-    bool getMinimizeToTray() { return fMinimizeToTray; }
-    bool getMinimizeOnClose() { return fMinimizeOnClose; }
-    int getDisplayUnit() { return nDisplayUnit; }
-    bool getDisplayAddresses() { return bDisplayAddresses; }
+    qint64 getTransactionFee();
+    bool getMinimizeToTray();
+    bool getMinimizeOnClose();
+    int getDisplayUnit();
+    bool getDisplayAddresses();
     QString getLanguage() { return language; }
 
 private:

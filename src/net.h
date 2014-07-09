@@ -1,9 +1,10 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
+// Copyright (c) 2011-2012 Fabcoin Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef FREICOIN_NET_H
-#define FREICOIN_NET_H
+#ifndef BITCOIN_NET_H
+#define BITCOIN_NET_H
 
 #include <deque>
 #include <boost/array.hpp>
@@ -49,7 +50,7 @@ enum
     LOCAL_BIND,   // address explicit bound to
     LOCAL_UPNP,   // address reported by UPnP
     LOCAL_IRC,    // address reported by IRC (deprecated)
-    LOCAL_HTTP,   // address reported by whatismyip.com and similar
+    LOCAL_HTTP,   // address reported by whatismyip.com and similars
     LOCAL_MANUAL, // address explicitly specified (-externalip=)
 
     LOCAL_MAX
@@ -181,7 +182,7 @@ protected:
     int nRefCount;
 
     // Denial-of-service detection/prevention
-    // Key is IP address, value is banned-until-time
+    // Key is ip address, value is banned-until-time
     static std::map<CNetAddr, int64> setBanned;
     static CCriticalSection cs_setBanned;
     int nMisbehavior;
@@ -316,7 +317,7 @@ public:
         // the key is the earliest time the request can be sent
         int64& nRequestTime = mapAlreadyAskedFor[inv];
         if (fDebugNet)
-            printf("askfor %s   %"PRI64d" (%s)\n", inv.ToString().c_str(), nRequestTime, DateTimeStrFormat("%H:%M:%S", nRequestTime/1000000).c_str());
+            printf("askfor %s   %"PRI64d"\n", inv.ToString().c_str(), nRequestTime);
 
         // Make sure not to reuse time indexes to keep things in the same order
         int64 nNow = (GetTime() - 1) * 1000000;

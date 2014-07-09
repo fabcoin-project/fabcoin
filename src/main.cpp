@@ -1,9 +1,9 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
+// Copyright (c) 2011-2012 Fabcoin Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "alert.h"
 #include "checkpoints.h"
 #include "db.h"
 #include "net.h"
@@ -29,8 +29,8 @@ CTxMemPool mempool;
 unsigned int nTransactionsUpdated = 0;
 
 map<uint256, CBlockIndex*> mapBlockIndex;
-uint256 hashGenesisBlock("0x000000005b1e3d23ecfd2dd4a6e1a35238aa0392c0a8528c40df52376d7efe2c");
-static CBigNum bnProofOfWorkLimit(~uint256(0) >> 32);
+uint256 hashGenesisBlock("0x384b060671f4a93948e9c168216dadb0ca2fbc54aa11c86b0345b6af1c59b2f5");
+static CBigNum bnProofOfWorkLimit(~uint256(0) >> 20); // starting difficulty is 1 / 2^12
 CBlockIndex* pindexGenesisBlock = NULL;
 int nBestHeight = -1;
 CBigNum bnBestChainWork = 0;
@@ -50,13 +50,14 @@ map<uint256, map<uint256, CDataStream*> > mapOrphanTransactionsByPrev;
 // Constant stuff for coinbase transactions we create:
 CScript COINBASE_FLAGS;
 
-const string strMessageMagic = "Freicoin Signed Message:\n";
+const string strMessageMagic = "SmallChange Signed Message:\n";
 
 double dHashesPerSec;
 int64 nHPSTimerStart;
 
 // Settings
-mpq nTransactionFee = 0;
+int64 nTransactionFee = 0;
+int64 nMinimumInputValue = CENT / 100;
 
 
 
@@ -181,7 +182,7 @@ bool AddOrphanTx(const CDataStream& vMsg)
     // at most 500 megabytes of orphans:
     if (pvMsg->size() > 5000)
     {
-        printf("ignoring large orphan tx (size: %"PRIszu", hash: %s)\n", pvMsg->size(), hash.ToString().substr(0,10).c_str());
+        printf("ignoring large orphan tx (size: %u, hash: %s)\n", pvMsg->size(), hash.ToString().substr(0,10).c_str());
         delete pvMsg;
         return false;
     }
@@ -190,7 +191,7 @@ bool AddOrphanTx(const CDataStream& vMsg)
     BOOST_FOREACH(const CTxIn& txin, tx.vin)
         mapOrphanTransactionsByPrev[txin.prevout.hash].insert(make_pair(hash, pvMsg));
 
-    printf("stored orphan tx %s (mapsz %"PRIszu")\n", hash.ToString().substr(0,10).c_str(),
+    printf("stored orphan tx %s (mapsz %u)\n", hash.ToString().substr(0,10).c_str(),
         mapOrphanTransactions.size());
     return true;
 }
@@ -282,12 +283,9 @@ bool CTransaction::IsStandard() const
         if (!txin.scriptSig.IsPushOnly())
             return false;
     }
-    BOOST_FOREACH(const CTxOut& txout, vout) {
+    BOOST_FOREACH(const CTxOut& txout, vout)
         if (!::IsStandard(txout.scriptPubKey))
             return false;
-        if (txout.nValue == 0)
-            return false;
-    }
     return true;
 }
 
@@ -439,8 +437,6 @@ bool CTransaction::CheckTransaction() const
     // Size limits
     if (::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION) > MAX_BLOCK_SIZE)
         return DoS(100, error("CTransaction::CheckTransaction() : size limits failed"));
-    if (nRefHeight < 0)
-        return DoS(100, error("CTransaction::CheckTransaction() : nRefHeight less than zero"));
 
     // Check for negative or overflow output values
     int64 nValueOut = 0;
@@ -448,7 +444,7 @@ bool CTransaction::CheckTransaction() const
     {
         if (txout.nValue < 0)
             return DoS(100, error("CTransaction::CheckTransaction() : txout.nValue negative"));
-        if (txout.nValue > I64_MAX_MONEY)
+        if (txout.nValue > MAX_MONEY)
             return DoS(100, error("CTransaction::CheckTransaction() : txout.nValue too high"));
         nValueOut += txout.nValue;
         if (!MoneyRange(nValueOut))
@@ -479,55 +475,6 @@ bool CTransaction::CheckTransaction() const
     return true;
 }
 
-mpq CTransaction::GetMinFee(unsigned int nBlockSize, bool fAllowFree,
-                            enum GetMinFee_mode mode) const
-{
-    // Base fee is either MIN_TX_FEE or MIN_RELAY_TX_FEE
-    mpq nBaseFee = (mode == GMF_RELAY) ? MIN_RELAY_TX_FEE : MIN_TX_FEE;
-
-    unsigned int nBytes = ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION);
-    unsigned int nNewBlockSize = nBlockSize + nBytes;
-    mpq nMinFee = (1 + nBytes / 1000) * nBaseFee;
-
-    if (fAllowFree)
-    {
-        if (nBlockSize == 1)
-        {
-            // Transactions under 10K are free
-            // (about 4500 BTC if made of 50 BTC inputs)
-            if (nBytes < 10000)
-                nMinFee = 0;
-        }
-        else
-        {
-            // Free transaction area
-            if (nNewBlockSize < 27000)
-                nMinFee = 0;
-        }
-    }
-
-    // To limit dust spam, require MIN_TX_FEE/MIN_RELAY_TX_FEE if any output is less than 0.01
-    if (nMinFee < nBaseFee)
-    {
-        BOOST_FOREACH(const CTxOut& txout, vout)
-            if (i64_to_mpq(txout.nValue) < CENT)
-                nMinFee = nBaseFee;
-    }
-
-    // Raise the price as the block approaches full
-    if (nBlockSize != 1 && nNewBlockSize >= MAX_BLOCK_SIZE_GEN/2)
-    {
-        if (nNewBlockSize >= MAX_BLOCK_SIZE_GEN)
-            return MPQ_MAX_MONEY;
-        nMinFee *= MAX_BLOCK_SIZE_GEN / (MAX_BLOCK_SIZE_GEN - nNewBlockSize);
-    }
-
-    if (!MoneyRange(nMinFee))
-        nMinFee = MPQ_MAX_MONEY;
-    return nMinFee;
-}
-
-
 bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         bool* pfMissingInputs)
 {
@@ -536,9 +483,6 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
     if (!tx.CheckTransaction())
         return error("CTxMemPool::accept() : CheckTransaction failed");
-
-    if ( tx.nRefHeight > (nBestHeight + 20) )
-        return error("CTxMemPool::accept() : tx.nRefHeight too high");
 
     // Coinbase is only valid in a block, not as a loose transaction
     if (tx.IsCoinBase())
@@ -613,20 +557,16 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         // you should add code here to check that the transaction does a
         // reasonable number of ECDSA signature verifications.
 
-        mpq nFees = tx.GetValueIn(mapInputs) - tx.GetValueOut();
+        int64 nFees = tx.GetValueIn(mapInputs)-tx.GetValueOut();
         unsigned int nSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
 
         // Don't accept it if it can't get into a block
-        mpq txMinFee = tx.GetMinFee(1000, true, GMF_RELAY);
-        if (nFees < txMinFee)
-            return error("CTxMemPool::accept() : not enough fees %s, %s < %s",
-                         hash.ToString().c_str(),
-                         FormatMoney(nFees).c_str(),
-                         FormatMoney(txMinFee).c_str());
+        if (nFees < tx.GetMinFee(1000, true, GMF_RELAY))
+            return error("CTxMemPool::accept() : not enough fees");
 
         // Continuously rate-limit free transactions
         // This mitigates 'penny-flooding' -- sending thousands of free transactions just to
-        // be annoying or make others' transactions take longer to confirm.
+        // be annoying or make other's transactions take longer to confirm.
         if (nFees < MIN_RELAY_TX_FEE)
         {
             static CCriticalSection cs;
@@ -673,7 +613,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
     if (ptxOld)
         EraseFromWallets(ptxOld->GetHash());
 
-    printf("CTxMemPool::accept() : accepted %s (poolsz %"PRIszu")\n",
+    printf("CTxMemPool::accept() : accepted %s (poolsz %u)\n",
            hash.ToString().substr(0,10).c_str(),
            mapTx.size());
     return true;
@@ -713,14 +653,6 @@ bool CTxMemPool::remove(CTransaction &tx)
         }
     }
     return true;
-}
-
-void CTxMemPool::clear()
-{
-    LOCK(cs);
-    mapTx.clear();
-    mapNextTx.clear();
-    ++nTransactionsUpdated;
 }
 
 void CTxMemPool::queryHashes(std::vector<uint256>& vtxid)
@@ -766,7 +698,7 @@ int CMerkleTx::GetBlocksToMaturity() const
 {
     if (!IsCoinBase())
         return 0;
-    return max(0, (COINBASE_MATURITY+20) - GetDepthInMainChain());
+    return max(0, (COINBASE_MATURITY+10) - GetDepthInMainChain());
 }
 
 
@@ -774,7 +706,7 @@ bool CMerkleTx::AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs)
 {
     if (fClient)
     {
-        if (!IsInMainChain() && !ClientConnectInputs( txdb ) )
+        if (!IsInMainChain() && !ClientConnectInputs())
             return false;
         return CTransaction::AcceptToMemoryPool(txdb, false);
     }
@@ -872,24 +804,6 @@ bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock)
 // CBlock and CBlockIndex
 //
 
-static CBlockIndex* pblockindexFBBHLast;
-CBlockIndex* FindBlockByHeight(int nHeight)
-{
-    CBlockIndex *pblockindex;
-    if (nHeight < nBestHeight / 2)
-        pblockindex = pindexGenesisBlock;
-    else
-        pblockindex = pindexBest;
-    if (pblockindexFBBHLast && abs(nHeight - pblockindex->nHeight) > abs(nHeight - pblockindexFBBHLast->nHeight))
-        pblockindex = pblockindexFBBHLast;
-    while (pblockindex->nHeight > nHeight)
-        pblockindex = pblockindex->pprev;
-    while (pblockindex->nHeight < nHeight)
-        pblockindex = pblockindex->pnext;
-    pblockindexFBBHLast = pblockindex;
-    return pblockindex;
-}
-
 bool CBlock::ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions)
 {
     if (!fReadTransactions)
@@ -912,446 +826,27 @@ uint256 static GetOrphanRoot(const CBlock* pblock)
     return pblock->GetHash();
 }
 
-typedef boost::tuple<mpz, CTxDestination> CBudgetEntry;
-typedef boost::tuple<mpq, std::vector<CBudgetEntry> > CBudget;
-
-void static ApplyBudget(const mpq& qAmount, const CBudget& budget,
-                        std::map<CTxDestination, mpq>& mapBudgetRet)
+int64 static GetBlockValue(int nHeight, int64 nFees)
 {
-    const std::vector<CBudgetEntry>& vBudgetEntries = boost::get<1>(budget);
+    int64 nSubsidy = 1 * COIN;
 
-    mpz zWeightTotal = 0;
-    BOOST_FOREACH(const CBudgetEntry &entry, vBudgetEntries)
-        zWeightTotal += boost::get<0>(entry);
 
-    BOOST_FOREACH(const CBudgetEntry &entry, vBudgetEntries) {
-        mpq tmp = qAmount;
-        tmp *= boost::get<0>(budget);
-        tmp *= boost::get<0>(entry);
-        tmp /= zWeightTotal;
-        mapBudgetRet[boost::get<1>(entry)] += tmp;
-    }
+    if(nHeight < 17280) // no block reward within the first 3 days
+        nSubsidy = 0;
+    if(nHeight > 10519200) // no block reward after 5 years
+        nSubsidy = 0;
 
-    std::map<CTxDestination, mpq>::iterator itr = mapBudgetRet.begin();
-    while (itr != mapBudgetRet.end())
-        if (itr->second <= 0)
-            mapBudgetRet.erase(itr++);
-        else
-            ++itr;
+    return nSubsidy + nFees;
 }
 
-bool static VerifyBudget(const std::map<CTxDestination, mpq>& mapBudget,
-                         const std::vector<CTransaction>& vtx, int nBlockHeight)
-{
-    std::map<CTxDestination, mpq> mapActuals;
+static const int64 nTargetTimespan = 1 * 24 * 60 * 60; // FabCoin: 1 days
+static const int64 nTargetSpacing = 120; // FabCoin: 2 minute blocks
+static const int64 nInterval = nTargetTimespan / nTargetSpacing;
 
-    CTxDestination address;
-    BOOST_FOREACH(const CTransaction &tx, vtx)
-        BOOST_FOREACH(const CTxOut &txout, tx.vout)
-            if (ExtractDestination(txout.scriptPubKey, address))
-                mapActuals[address] += GetPresentValue(tx, txout, nBlockHeight);
-
-    std::map<CTxDestination, mpq>::const_iterator itr;
-    for (itr = mapBudget.begin(); itr != mapBudget.end(); ++itr) {
-        if (itr->second <= 0)
-            continue;
-
-        if (!mapActuals.count(itr->first))
-            return error("VerifyBudget() : missing budget entry");
-
-        if (mapActuals[itr->first] < itr->second)
-            return error("VerifyBudget() : got %s for line-item, expected %s", FormatMoney(mapActuals[itr->first]).c_str(), FormatMoney(itr->second).c_str());
-    }
-
-    return true;
-}
-
-mpq static GetInitialDistributionAmount(int nHeight)
-{
-    mpq nSubsidy = 0;
-    if ( !fTestNet && nHeight < DIFF_FILTER_THRESHOLD ) {
-        mpz zInitialSubsidy = INITIAL_SUBSIDY.get_num();
-        if ( nHeight < EQ_HEIGHT )
-            nSubsidy = TITHE_AMOUNT + (EQ_HEIGHT-nHeight) * zInitialSubsidy / EQ_HEIGHT;
-    }
-    else {
-        if ( nHeight < EQ_HEIGHT )
-            nSubsidy = TITHE_AMOUNT + (EQ_HEIGHT-nHeight) * INITIAL_SUBSIDY / EQ_HEIGHT;
-    }
-    return nSubsidy;
-}
-
-CBudget static GetInitialDistributionBudget(int nHeight)
-{
-    static CFreicoinAddress vAddresses[320] = {
-        CFreicoinAddress("1DCyWRmTXB9goqA4Zb88nU1Q8snA7d7n4x"),
-        CFreicoinAddress("1LoFvV5YJsSMkpyPLizqyWH8KAkevV2XwJ"),
-        CFreicoinAddress("1JTUD2rB3FvbNFPw7cvCdTVDM9nuZTw7Jk"),
-        CFreicoinAddress("18w4xQQj2iXwtq9smYkEAJrWVz4jQNU4xd"),
-        CFreicoinAddress("16vdGLyxdYgSCT9xAng9Js7KrsnrUHsyG2"),
-        CFreicoinAddress("1Lo8mmskrLnvCuthadVaRS4K7WUSFpWAwj"),
-        CFreicoinAddress("1J1irQQ3ZWoTPct989Nnzdtu6WjfCjQcWs"),
-        CFreicoinAddress("1MME2u4V2ZiU6uUVJXTZMg5sQXAyMBUNXt"),
-        CFreicoinAddress("1CT3kUDi3rvma8R7Jwbz7puATSU3xzfLHz"),
-        CFreicoinAddress("1CLupi58K9XHVeWZ8jwbWiY4Ns46mPALbe"),
-        CFreicoinAddress("16A8XoWWvtJrDE1AdYQoLxAQcoLQML9gjz"),
-        CFreicoinAddress("1NwgZoUnudfmbQ99xDRdvrYskgjQ7KBt1Z"),
-        CFreicoinAddress("17CDPam7M59JM6vK5xzh1vUGKjYT9Byi5S"),
-        CFreicoinAddress("1PyKZKfquWcu3PFzKbvmKZ2oJWXbmbsWdB"),
-        CFreicoinAddress("186LbdeaDsn4Y5zrLN9cfSHWpQPSHtLbgC"),
-        CFreicoinAddress("1MrQWWNKfVseYyGkyyLsDhFekJWGJNt2i9"),
-        CFreicoinAddress("1EAUtv6YfvcRUrU5SncdZ27aSJ6SBNJH67"),
-        CFreicoinAddress("1DuSbRKB1GL9cBeJLYsuh3DADdwJgvHAQN"),
-        CFreicoinAddress("1MPdcnGXHsjR6rFSBUMm4ui44q8Ra1fYRT"),
-        CFreicoinAddress("1Ntv6bDFj8eQnXjawcatnJjJTowo1BA8rF"),
-        CFreicoinAddress("14j9vnqn6FZwPZmwdvGSuESm1m3oQsHP5y"),
-        CFreicoinAddress("1C679HkKyki9rN8tJvtMNyXGLedPdo8zbb"),
-        CFreicoinAddress("1EMKZYHTcnpHVUJx4dUp5Jne2ePQKjpdTm"),
-        CFreicoinAddress("1PmgFAV835znVpUwGkLkvJrKc4ZzBqixNX"),
-        CFreicoinAddress("16zKbgjQDqua6xjrXLhCbPGFrpr8UJxf4x"),
-        CFreicoinAddress("1KPurbuUH5D6HRe3Y148kUbRjDyFCCm3VH"),
-        CFreicoinAddress("1GVyWAXxP9tgZbj8iDSQqQ5tcN36uJ3F1s"),
-        CFreicoinAddress("1E5udyBXuBt1e8c2R27AvSTdp8H7LEhmxr"),
-        CFreicoinAddress("1hQcLTTD7KiFxiojvSrrrj8Y1w2gF5bHE"),
-        CFreicoinAddress("17BJ1oZdZJS64curVAL6rN1yYN7YiNVXpR"),
-        CFreicoinAddress("1LotiV7qGfAZhVV36XtrixnEfHCiuqe39e"),
-        CFreicoinAddress("1Q5yedqC3adLpNjbY4CWMxPojoxnSCVGjw"),
-        CFreicoinAddress("1FpBGhBWn7WDZr9nP47qG3DktJbaY7P48P"),
-        CFreicoinAddress("1H6Nh8dRPZjMm3KViuW5ZESjRwqYnQ36nt"),
-        CFreicoinAddress("1NAAKtpk7VRRUtA5ja8YxCZQaisXQ28HqA"),
-        CFreicoinAddress("1JKxed9uYfvcPgjGdo1GQXwMQJkAnap34G"),
-        CFreicoinAddress("1DZ58aSGD13QfUa118rtvfKrJiVPAoxdV8"),
-        CFreicoinAddress("12wnNuaQHbLyThJVJvfePhV8UwQEWURLLP"),
-        CFreicoinAddress("16f8S6f6ZDX3N1JG2DL5kyz9KCzmwpGgt7"),
-        CFreicoinAddress("1PPKwAUZ6g5wWiopfyJKJZn3xUFcrJbSBF"),
-        CFreicoinAddress("18DzCPRpU1Y2o5FsuuvcScZaYSi2ZBTVFr"),
-        CFreicoinAddress("1E5fy7csgbN5G9ENRwvSwGSAibLdLk52pe"),
-        CFreicoinAddress("1Dapd3WLAz1jm91FpNThHamXeMjDU4TJgJ"),
-        CFreicoinAddress("15HQuReQzSQ1mrHWy3iYELyJLjGNe9gNEZ"),
-        CFreicoinAddress("1DcJhNQJLkDrSmrvATciEaf95ZvnhFFUF7"),
-        CFreicoinAddress("1ErNVYRnGQpzFmxkXYnqR4LbcCViby7Rfi"),
-        CFreicoinAddress("1D1CmGn3BCM5rviTxZEfc7NhozAetePkit"),
-        CFreicoinAddress("1Af3dbEWMK5VuMkUozepYPQgMeVtmKtvW9"),
-        CFreicoinAddress("1JY2W5m4jsYzY2YYXU6RRKDmobE3BYEbgA"),
-        CFreicoinAddress("1PdTBBm2xhCoUY4A6cfYCopaFDsFyTf4MY"),
-        CFreicoinAddress("1Fe51wUzrhyGmag9UXmzEsr6jSyWqcATAM"),
-        CFreicoinAddress("1kyb1A5jWYP49YTkoN2y3JFQuNp1S2gXa"),
-        CFreicoinAddress("1FxZ7fmDQmauMASYVuVcHeajGZQKrQ1UWB"),
-        CFreicoinAddress("1EwtDpNLPmUZNLFmGMmNTwviUVe3DuTFKt"),
-        CFreicoinAddress("1NYRPya8KWUfiSr8fXxccPoDMmBw2Uqj1y"),
-        CFreicoinAddress("16vQMSBZK7iy5HDFfeiP2WomfpGfSEPJx5"),
-        CFreicoinAddress("12E9bCLYb9uzh2MHhpsyR89V3eLXZp5afr"),
-        CFreicoinAddress("1EA4NJjMXSgVNsNgEc7nSyRf3epjp3ABrQ"),
-        CFreicoinAddress("1NN442B74LAsXUMUFZSriWZCUh8b5ECFR9"),
-        CFreicoinAddress("1EMaEQmjjDCjgu3auEam5ABQ1J9ZtdLdpV"),
-        CFreicoinAddress("1RYXoGz2cHTGsYC5zZdDwpCdGRj4aBdAX"),
-        CFreicoinAddress("19aDWt7kBf53uLANiWnLFnWo5CqASh79mi"),
-        CFreicoinAddress("1LDEniSxXknXLHT1BMWpFsBM3PQcgn1nYz"),
-        CFreicoinAddress("1Q4Lji94eWCC9xBzwrbRE9yTMYS5fdKg9z"),
-        CFreicoinAddress("16fQVYur5CVMq9VfNLYypKXNeTmvWnDKsz"),
-        CFreicoinAddress("1Mc3r8pCpuRiHhkD3DrWf89CUnZb6xbFbg"),
-        CFreicoinAddress("18oEnf5iR9CD2HFDc9Yr8kD7m5CrJVWRkv"),
-        CFreicoinAddress("12VDq99L8UQWr8Waqo4GreEGCEBnkxMaXy"),
-        CFreicoinAddress("1H7PxhMmvqiRT8NDEkSFjfDekRLQ65CqBN"),
-        CFreicoinAddress("17yC59RcpYsw7jX3Zw7c48AcWtJqaHUwAr"),
-        CFreicoinAddress("1AFT16ksWdqdjhk56gFDaRnr7vS4XCVtyQ"),
-        CFreicoinAddress("1G84MZVqN54QTD47YWWmimy9htaj1WC58U"),
-        CFreicoinAddress("13YcisL6YyUG5nqegyqyrL6pVtrMqGYtcq"),
-        CFreicoinAddress("1NYdmagVHfbqTgW4hYJKS2YnWrJzCnSsvZ"),
-        CFreicoinAddress("1PumqgHPLUjPKfddgwJA46D5GBdYgT8myg"),
-        CFreicoinAddress("1PFKxU6g1kQayDwvpiLX2vJgUghMqJz9Ck"),
-        CFreicoinAddress("154ENKy3HuYoN8xARVaxp61NUAt5GEknDj"),
-        CFreicoinAddress("12CJ8BD8L8tQXjrpy4UfjJwCCtoL6vsegD"),
-        CFreicoinAddress("1LXCWYJ6k7EG2Bi8rLh2jhV94L4G768yTa"),
-        CFreicoinAddress("1K1rbcUFmE7XScTsqiNEiJHyX69eqbZdDB"),
-        CFreicoinAddress("1uZZzXiu8n7eL96rcFWh9MvcqerYxaGce"),
-        CFreicoinAddress("1JidqtE1YHwXFC1utxPAp17RkM3rUqwULk"),
-        CFreicoinAddress("1PuMwPqNLLYi1sPxvJToid2EsfiP4xPfo6"),
-        CFreicoinAddress("14ZSJRvSdgYFA1xUM2txnQKdMXMfsEWvuJ"),
-        CFreicoinAddress("1D9RJw7p5zgz4JeWvVzYxBsAkvucRMiXfG"),
-        CFreicoinAddress("1JRpRLZgcfNNeVEwGQmYZw5nv7Aq3KVx5x"),
-        CFreicoinAddress("17Rqyx39YnpFN23dPE3CWRPC8JhuBVKktx"),
-        CFreicoinAddress("19pozj4JeWd6rpMDeTpx8d1Dv4rebhUkvT"),
-        CFreicoinAddress("15jULtTPTzXHr9ezTMFbaPJojbuYFrbrQp"),
-        CFreicoinAddress("19dfCSTERPh5j4XtYoJatjdjD9afReeY3s"),
-        CFreicoinAddress("1LgzNc1Sfbu8BaxKUESGbNzCNnpqvhpCi4"),
-        CFreicoinAddress("1HTvoZUUNncPkjjv17xHLEtncdrgcdnN46"),
-        CFreicoinAddress("1NHvSZWwk8RtgPvfhzykpvebQnVk1Q5XxX"),
-        CFreicoinAddress("1AzdeDfjz5C5yT6wVxurgS8QPkZviHvY8N"),
-        CFreicoinAddress("1BdFwnfS84uDeZn4sojUs5ZC8fSkx9o2XG"),
-        CFreicoinAddress("1AgCAgvQZPQTkdMg853SkM2WdRzN4Q2ATw"),
-        CFreicoinAddress("1JABYERsgkAYincsgCpic7MwV63iM19iXp"),
-        CFreicoinAddress("1JFudqZDUkBMdV4ShLmhxLD7sfNEYdBQCE"),
-        CFreicoinAddress("1Pqf48Skyxt77RNVwTLxUhA2BNCscaHJKa"),
-        CFreicoinAddress("1AtdTwFFYZJrUUSWbBLBCkodRcnqwb1a6G"),
-        CFreicoinAddress("14iezrH1nR9TjGtnywFPqBHbwYcEhwz8y9"),
-        CFreicoinAddress("16x2aavFb2AHKntUnzA3HC2wmi921YJn4i"),
-        CFreicoinAddress("1HovjtiToM6f2xV3Sxg4fxfvSYPCGGEXLe"),
-        CFreicoinAddress("1MNrqZyo7poywLPVap6PsmmT5CS4f8hyWq"),
-        CFreicoinAddress("1F6PzQRW2MPfCYvzgeUXoBXaEikH3E5zMk"),
-        CFreicoinAddress("1F2SpgUakBvx6aNgJiCtEZHnTqVWeQcoMk"),
-        CFreicoinAddress("13iTRwxSLGC17fzumSrRidaXe8v8awdDux"),
-        CFreicoinAddress("1KuyBiZBdXVq8oNGAPWEqWiFi2RyH8rvwd"),
-        CFreicoinAddress("1HdXmhHKkkzpn1UKmhBWFzQMYsUqxUuVZ9"),
-        CFreicoinAddress("1Dw9jXoWc5MsEH3uLB9pi98qeyijUrvWU3"),
-        CFreicoinAddress("15mW5WsusPo6LAAYLqa6ngFfQ1jX51v3Bn"),
-        CFreicoinAddress("1DFfarcjskvSi2w56msV4JeeVZqtuwEL9p"),
-        CFreicoinAddress("12SeGWd2txi4fdQKoFXsTdd2fgjDbABWyb"),
-        CFreicoinAddress("1MoENmjtakS8XTHcwsbVFeJkjEckMhS3xm"),
-        CFreicoinAddress("167pv4Hn53XQ4hFhyNtEyP36n8HrL3NU3j"),
-        CFreicoinAddress("1E6WgpC4bmYJagvsTzhRxZ1Z8sRSsQjmJX"),
-        CFreicoinAddress("1EFkVCzezsZCq56JWSBRf3Dy6tafFRxh4N"),
-        CFreicoinAddress("1KnKZwDb44Qf3Lutda2T85uFZiTZwe2v2C"),
-        CFreicoinAddress("1CLpF2fLukzBHard43mXLEXxz11gFK5dc9"),
-        CFreicoinAddress("1DXSfPi1Tj6tQ5qf5M6Yj6cpNmLfPKMwr1"),
-        CFreicoinAddress("16nHP74UsqeHewM1yUhNCL3zCjkWnqFt8g"),
-        CFreicoinAddress("1FeqXkG9jGEDcPaKJV8rdh4NbqTjbdvN4a"),
-        CFreicoinAddress("1LwwjmsoDtQ1Zh9N8doGMczP1TJnes2YoZ"),
-        CFreicoinAddress("1DgusdNgB6nRD2emfwURMmk33LrB7Wp95c"),
-        CFreicoinAddress("17kjPofVVmhZAWXnrVwfqizGtXWBufWwbf"),
-        CFreicoinAddress("1EnLHA3U15wXehXAC24W587EEaeyUcaA6K"),
-        CFreicoinAddress("1MwpkFtEwrAQNbsmbt4kB9WtoB8mFLXZ44"),
-        CFreicoinAddress("12iQRcVoRCbFNvoQARM3rufTkd7jXpHZEm"),
-        CFreicoinAddress("19zK2WFDkaHZfWa4uS5mzF2XD1KrZEMxy2"),
-        CFreicoinAddress("12Zs8LtRY1cTS3HKw1gwPzYjB1Ar6Er93R"),
-        CFreicoinAddress("1KDVcQhjZuX39Fvv8QbrSpaSycMA4YdPkU"),
-        CFreicoinAddress("1AT6rxNBT8sasYKrKm9fv7LdjXBS89Wewh"),
-        CFreicoinAddress("19YjbLEUgqV8joQMgijDWZoY1inwXf1hXc"),
-        CFreicoinAddress("1EpHQ43BkzmKYMiYwmRRKEXQidpgA499px"),
-        CFreicoinAddress("13bQP93mmUFtUGVuBEwZ9ymdbCC9yywgdL"),
-        CFreicoinAddress("1GatPyGkCX5YUW4f2QHJk1PzwspCRz9b3J"),
-        CFreicoinAddress("1Jk8sCUfHVE6VpwkkTG9qaYYS9u1zMmQAs"),
-        CFreicoinAddress("13N4Eiv2KiX4PeFwiWnC847JBv4TP2sn1Z"),
-        CFreicoinAddress("1ESzED9saJ3bVB6BbVSTFGDxRLnTgWRVDC"),
-        CFreicoinAddress("1CspvzG7HyuNXRLsaWnpsLXPDwkeDKd4mm"),
-        CFreicoinAddress("14Rs4fo9tK39kyEFoAjbvkcgGZ6k356t3T"),
-        CFreicoinAddress("1D6jgPJYoFhbY7gJjNMAbyfJzBGVtqSc1o"),
-        CFreicoinAddress("16MHoaVyYQgPU525fz2auJpK6JVyFKEiz1"),
-        CFreicoinAddress("1FfS9TQswYZHYDNkUmncRAYjYJkLzGncp5"),
-        CFreicoinAddress("14PXPSEjNjWAuqYa63RBT6gewnomE9saRu"),
-        CFreicoinAddress("1CHBBtBCRQz1TFyE12g8RbGPZ6UzX2AieC"),
-        CFreicoinAddress("1CMwT1jzfoe9VvURpZanaXVQobMQLr13W8"),
-        CFreicoinAddress("1696KNrMvHvnthPLZnGuYGY96UbEqLeXz6"),
-        CFreicoinAddress("1A7TQi9sMiNQX8uwwqFb8eqaXnpTJY4WYg"),
-        CFreicoinAddress("1GNuX6AN2KCF1AWtxAT9QYD6QRJubRvKaz"),
-        CFreicoinAddress("16L3CvHeZcZcr3wPhoEC3ZsMLN7YTonMTQ"),
-        CFreicoinAddress("1EnqRdqx1VZyfc5ia4pcmZstBcGdW8FGxn"),
-        CFreicoinAddress("1MQ1QeCMZhxFCgReGEPRS2Qy74FaPqFccW"),
-        CFreicoinAddress("16Za6Rn8dCmM8gctXQtwN1yQ2WXnhHsSgs"),
-        CFreicoinAddress("15k38dy86CRnirMY9Q1niVmfn7nfXTmppL"),
-        CFreicoinAddress("1MQsruCXBjCZzTZKKpPwcC74ztetbtAw4E"),
-        CFreicoinAddress("1cmAt63c4ZAqRe2fBQTYs5Jyx41fiBbhQ"),
-        CFreicoinAddress("1PBCaowV7gQM6Lj1NfSpH2TnHHmqXcYTsC"),
-        CFreicoinAddress("1841uXFc2kUTUogCDJwp4U1NPjSPqsg69x"),
-        CFreicoinAddress("1XNo9kDMM6uqvf9yCWmqj17rukC8abjtb"),
-        CFreicoinAddress("1A4kHAe6rNz1q8G6dYjNMyWzgVv4DxYget"),
-        CFreicoinAddress("18Y6y6zcJrG5j2RjmGqsUvtWkZhnTvRka7"),
-        CFreicoinAddress("1DkcMkHWUUVjXgAu2MFXVkUuwZ6JWv64cz"),
-        CFreicoinAddress("1JvXTyBxhjE9mERWEFnqeuAPgbJSi25qGd"),
-        CFreicoinAddress("1FHus2MsM8k4oKHt22YFYeoFkf65kxQFP3"),
-        CFreicoinAddress("18HLkAhrzeNsaMB3MY1xUGW7wkzjWGobT7"),
-        CFreicoinAddress("1AF7KmTRrS3mMxop2Viop1MctrNJmPAHQt"),
-        CFreicoinAddress("13g4rWjU2PK4eN9D9XXo4jRB84RiJ2hD7o"),
-        CFreicoinAddress("1EWUiUoxZXfTbZXDZGueag7XRnv5Mej8ZZ"),
-        CFreicoinAddress("1LuuGk4tyd4USQqtYypemjt5vs3VRqV1QU"),
-        CFreicoinAddress("15eUUDUYDuiKnt9xNbzhNFmorCK9F9mJb2"),
-        CFreicoinAddress("1HGzWgdrNAKsE9nE1GHtUvaXHNzvwTyPQX"),
-        CFreicoinAddress("11MhmCVmFszm6yTTwaK2dypwcLaybmCjp"),
-        CFreicoinAddress("1s9XWpGPQqhbog1S6xgGqcVnfvnLMAueZ"),
-        CFreicoinAddress("16f3tHcuRavx3tSWCM2jnnCX5jGa2vJe9Q"),
-        CFreicoinAddress("15NWaghRx51ravYTUqsnBF2hQFQeSHtTvS"),
-        CFreicoinAddress("1QGUUgikmqCinDQn3vfqx9q6mnT5ekA4BG"),
-        CFreicoinAddress("134WvpvyZUveYc98CmtWZc1oBBXdrV1GuU"),
-        CFreicoinAddress("1LqNfcDBn7eytc7Ln6fLrCDLkYeMa6R9dV"),
-        CFreicoinAddress("14xbponjm6rXp8cNzTJmtCJwvwvDuKvaCD"),
-        CFreicoinAddress("14D7JyUrv1HeSD7FCc8WupmbxUiGyfC7uC"),
-        CFreicoinAddress("1ER6GhDJokhBjB73DWDTdC2BP2J9DiqD1o"),
-        CFreicoinAddress("13Q3or3Hew7hBZzMoriz8LcMXwptqD5HEd"),
-        CFreicoinAddress("1HSyeVQEvdRwj2rutFN33cKu2tPzyGkgx2"),
-        CFreicoinAddress("1A1WaQQ6ZjXuEe2KYZNC3ycPg4X9czsR4D"),
-        CFreicoinAddress("1fhzxkMPY4hUYNywoQwyVGkinVKQrPJ2P"),
-        CFreicoinAddress("1Nf63BqwEmb7vU15bRfpvKEs5tMGZpR5Fi"),
-        CFreicoinAddress("1Gi6tjnRBecQovhRQVNmsPyVZYmphZerdg"),
-        CFreicoinAddress("1AJ87nhgSQkac9BUjEvbyWh8c95ciHLZWG"),
-        CFreicoinAddress("1WDyJLrJaLRePMtea6bAgADwzdpbW5nqd"),
-        CFreicoinAddress("1JTvhcJuxydevXw4ocUUteiPNWwPtMM56H"),
-        CFreicoinAddress("16X1LYmpxM2fPBjNTLbnPo2LdA6sB7fbNu"),
-        CFreicoinAddress("1315ZWhxgd6pqqTmvF21fxt5wzYvpcnZSm"),
-        CFreicoinAddress("17PWpyrUmkaCVPu6KXaWvuLLYvD9YU61RP"),
-        CFreicoinAddress("1PADxQpcx8Kvs3PprjYvM1wYFyjxB3tcs8"),
-        CFreicoinAddress("1BWyJmxybx3p1guhud8qxabrGbVLWaVNaM"),
-        CFreicoinAddress("17JpmLSEbXgmheAvTQ7iiBvR5TaSsM2Xgt"),
-        CFreicoinAddress("19oxMuyyipVsvxXWKBBrFmY8hQbWkiiVEv"),
-        CFreicoinAddress("16TvroBFWJmUN7VSHQLmyh6KiCri5QVTQu"),
-        CFreicoinAddress("1MXJR6XRoThY9rwvyvLkXWN17WN7rAQC4J"),
-        CFreicoinAddress("163N8CmDAf45CM6brXMpzg3AN2nkDXTuRt"),
-        CFreicoinAddress("1CWudCKLCxT5AXteLFeZRBDyb4moQH4cVL"),
-        CFreicoinAddress("1DYmgt2zpW2eNfyczC98aq76URHQMnfwZK"),
-        CFreicoinAddress("1JnE2YseXgBX4oHGo8VywsxnNkp52s6nkX"),
-        CFreicoinAddress("1D8WBBBCHhgLrMa8s3QU1bkRcRHEt8cNfv"),
-        CFreicoinAddress("1Fm5eoDvEZo4hyW4YEDu3q2gKbpCuo9hqw"),
-        CFreicoinAddress("18uRTixnVaKMz9tyoR6Ve6Rqdwtt8oZ1Zw"),
-        CFreicoinAddress("1FuByKdd2RK3hjc3UFeV56HvheyAMnjMMS"),
-        CFreicoinAddress("17nDqatJ7M6M9vFRa4BngCCLPGSJ6mfc8b"),
-        CFreicoinAddress("1G4qHkiaaVZwuLqwvh2itFjR18iThkeaDQ"),
-        CFreicoinAddress("18ZcHUg5wV4sSdd9pS7xv5rYsfx5D1hZWi"),
-        CFreicoinAddress("1CZU6UCZjtWueXQWYzyrFa4K7pTSeBQ8cw"),
-        CFreicoinAddress("19zRVJvXaXZvygqbHAP1ZKF5Rx9gq3Xh8u"),
-        CFreicoinAddress("1HQAyw9UUi2eiQHJcnbg5eeJTnv2QoEQqA"),
-        CFreicoinAddress("16eZAqdqypn47T8DwS1archd39uXqK8JQ8"),
-        CFreicoinAddress("19he5Hy915MbSZBvwHjB3LAm5UyLnmQ5TK"),
-        CFreicoinAddress("1CzGcY5JKDroUtdFdZJArGeEmKMEtyeAKw"),
-        CFreicoinAddress("1DzowkZrtEQgoDF8xgxjPBfLaBMeBHjNr2"),
-        CFreicoinAddress("16GA6zc9iTUB8o47oi7fbE88ayEi8C7w2r"),
-        CFreicoinAddress("1Mvp5TikHrzJetDMbjHkzAkP9rMBfQrais"),
-        CFreicoinAddress("1Lrbk1vrmCqVfajBqtwHD1x9x72jeDCon5"),
-        CFreicoinAddress("1AMDHRKUah3J8yESFt7NnoUXrM4ULHcUpN"),
-        CFreicoinAddress("1MbnTTv5FJX8RsK5tw9KjNx1VCvo94GEKK"),
-        CFreicoinAddress("1Hmbm1TUDuDwdVWkU1oiaReRRBTzb8fMDJ"),
-        CFreicoinAddress("15XYapuYSjaDc4uDXJsf3PF33YzSRs5P3M"),
-        CFreicoinAddress("1C3ovhhZwo73isNQPuKKD5VDm2XwByBkTK"),
-        CFreicoinAddress("16VJrBFjFjhLY93NihDvWqBpUeiXeL2FUi"),
-        CFreicoinAddress("1C9Niuy1cSW6a6g5tm8GhPsSML6ZtWeUQS"),
-        CFreicoinAddress("149937wZtsTvtwmixD33npnsnyUm5zjstX"),
-        CFreicoinAddress("1NkCKjPZUFecVWxLGnJbN7Fp8viJRG5Xg4"),
-        CFreicoinAddress("1MG3okwhF3YDwVWDcYsNr5ySA4eMtCATrK"),
-        CFreicoinAddress("1GtzbwNuHYBZaDRVpJGuDwjBQhSh5RBVRZ"),
-        CFreicoinAddress("1CJi6dja55AtGeuJX6WLFGTHsoofqZyDNu"),
-        CFreicoinAddress("1oftVXkjfpJSMKGnz1pps1xVWNUNNhAmq"),
-        CFreicoinAddress("168KgGGUEEx22eCNuSMjsKvn5chiZ5c217"),
-        CFreicoinAddress("1FmQzGLJFu3AvucwDEAjYRM4fPgiSZsT6Q"),
-        CFreicoinAddress("1F9t4EmWXy2Wui21LaMuZmRDwRCF38aDZN"),
-        CFreicoinAddress("19eFuss1dgxPdDfoAu6AsVmBUj5d2DUPu3"),
-        CFreicoinAddress("15Yr2PPbFGqbi2SZtZ59cvd5y2Es8atRE5"),
-        CFreicoinAddress("1Pz8oisCda5aJXtVVDo1mfxxvgymVNcmsM"),
-        CFreicoinAddress("1HkHQHNkjXp6VinoEG6a1i55NmreXC9yAX"),
-        CFreicoinAddress("12ShPmbsADZMacnr5u2DPxssKXjd3HaCZc"),
-        CFreicoinAddress("1BasQDDfZ677LF3mEAQUEFHvJexZ8ZxY47"),
-        CFreicoinAddress("1FVXTVaK3rwSrx67WGdNkNFwL5sVm81TEK"),
-        CFreicoinAddress("1NV8VjVBrkgCTJvyBHZumboXjPtSNZvRJX"),
-        CFreicoinAddress("1HVdN1BSusJZ42sSfJFHB2CJ6LcW5Fz31a"),
-        CFreicoinAddress("12j2yfUP2dNo3HwdrTDjMGZhzBcdhYvFj6"),
-        CFreicoinAddress("1BrWHBKCpvNYssq8Kj8yY6qvy7GqFgk8UP"),
-        CFreicoinAddress("1G3faUnBxMHwwX2uLn6dZJEj9pmJ2o5cnq"),
-        CFreicoinAddress("1Nq59Py1u73B26aTTRhZG3g9h5fmrmkeX9"),
-        CFreicoinAddress("1DMuz7B193myzVq4Kgg76Jb6Da2UjkAti"),
-        CFreicoinAddress("1124BMmAevhic3H1MQB3teQFhoVi7RVUhR"),
-        CFreicoinAddress("1B1hrgcDNfSuaKJi3oJ4cBtyysq2BpGFz8"),
-        CFreicoinAddress("18NE1w2soK6xGUYYvoTe7oEtRtQhxBLXCq"),
-        CFreicoinAddress("1MESy7CY2yTgxSERyejcvCGjK8Qm2EhE4g"),
-        CFreicoinAddress("1445Hs1Lgh9pPvD8mSt5oiGwTY8yT2sy9R"),
-        CFreicoinAddress("14pm2Fxwin4mwHqd5ujXAXTJJFuQ31qYUf"),
-        CFreicoinAddress("17UhQpeFQ3nCjj8PJKCrTWHnP8YSvrNM7h"),
-        CFreicoinAddress("15zVu5t8iURV2feuvmnHgYp9u7cxPC4XrN"),
-        CFreicoinAddress("19JriYALeNskNnvjYidpoNHNLegftkViqH"),
-        CFreicoinAddress("13mauBB6JYTPcfoWbNbCWKk4sNqmwxCXse"),
-        CFreicoinAddress("1LwRt9rpGaekbht7UAitg2ADmFtDrKThYV"),
-        CFreicoinAddress("15Z9wnxM6VxrRkqhLZpLskGRJ2dLRMEmCg"),
-        CFreicoinAddress("1GvQwfMSMRggmmFCRqf1EmvaG5U5sY4sKL"),
-        CFreicoinAddress("13iUoiiVq7C4fUmy94r1HEDf35YKwBAVXh"),
-        CFreicoinAddress("1ELZsnzgBmZSSxQQYuAANg8izDFTbzhbPB"),
-        CFreicoinAddress("13me2Z71XAtmkzggnqusdvuRiXZzFRGZBj"),
-        CFreicoinAddress("1KC7ECvdcofiYXJ63iUnvFrEH4zzhQZ2pB"),
-        CFreicoinAddress("1LtFLa3oaEBhmHQ5iXRvFqeNcrzU8GPNMM"),
-        CFreicoinAddress("1LNHH8DGXWQRyfmkSkaJcBkkiVxUhH8tBM"),
-        CFreicoinAddress("1Daw5kGzsqBhfRfMV6dAA4bgBZ2LBWS1nY"),
-        CFreicoinAddress("164XLENwRiappRPUP47sRTSyXtW8CAXVLi"),
-        CFreicoinAddress("1CFoTaknkFGADVo2rK92jwq18NWBzVcJGS"),
-        CFreicoinAddress("1MnrNuPrnuJFxYnkpKDqUymHGjb1d6qLVq"),
-        CFreicoinAddress("1BpwPwf8kUssmoMCoWnHCVY4wjBJi3CZyD"),
-        CFreicoinAddress("1jiJb2DU3DB6ujD8eV3DZXmnfwWaHti4y"),
-        CFreicoinAddress("1DqQnvWdtKvwBtePpCbDd8juZ9ZbeaKFdH"),
-        CFreicoinAddress("131D32PNpqqGtLGUaAaZePqpUdBTiy8Akh"),
-        CFreicoinAddress("16jK6KaY7Ub7fZ7YaBi94ZsygovzixnRNx"),
-        CFreicoinAddress("1EJx1ShX4UJVrzynP3oZw8wdLpSGC1KPrz"),
-        CFreicoinAddress("1899kFmma5FongtN9JfvFKqhwtbw2w9MDe"),
-        CFreicoinAddress("1FNNBK9SeDUufbbnmoagUFt7oKVbb65vaw"),
-        CFreicoinAddress("1LxF4pLjeSpNs4ux24MDduzCzrM2KCsE7M"),
-        CFreicoinAddress("1BZjVRe2CCA7G7qnG3beWWhG173f1mbNX2"),
-        CFreicoinAddress("1L5HWs7WrK457CzjAgnHghveFpQVv7rRTe"),
-        CFreicoinAddress("1Kp4bjG9nwbogd8WM62ijGG6onW9Wo4aYK"),
-        CFreicoinAddress("1hhvJ4QmB6RX12Bps9xhnMHCDDXTXAnDu"),
-        CFreicoinAddress("19xiuTYSm85gNsPZw8hGLS69e2DjVbCuAP"),
-        CFreicoinAddress("19WdcJU8Z1W3ZZnbpfDRbdrYGapxp1L5zo"),
-        CFreicoinAddress("121hT7w8DN3x1pYEowak7FjmNgihMNo2cd"),
-        CFreicoinAddress("1BtthjPb9GPKwgcJtrgZRQRWhiRSCHmyvk"),
-        CFreicoinAddress("1JKgRTkMgEodFFpPwoz9W6pejMN3x3J9X1"),
-        CFreicoinAddress("18zp4dHdouYqFn2qC4ttAva8cwqhZ4pm4K"),
-        CFreicoinAddress("1ELAVZKvGykuzRDCvFUsJTL4istYisbxpK"),
-        CFreicoinAddress("1PfULZdJniM8SutFdjoKvG3WLUwxZL2YUf"),
-        CFreicoinAddress("1DTbnuz4dPLdduseE3k5xr62eFAYjCSk3E"),
-        CFreicoinAddress("14jVGdWJRcqpdgWPAbbvhMfVnLha6MdnYU"),
-        CFreicoinAddress("1GBiMVjsqkcGxij2hGFQxVUX2WjDcr1Esf"),
-        CFreicoinAddress("1FGUuAuGRkSqEL8Besg33QsekxmBB75ZUH"),
-        CFreicoinAddress("19FsZeejdbfUKK21wENRdoR2BUowD4FsMZ"),
-        CFreicoinAddress("1LbBHWffmANdhcb1Wciv4jWwXPGrtVFhsU"),
-        CFreicoinAddress("1FT9PRuDmFKxZorYrfgibWaaBdKWv7PiB4"),
-        CFreicoinAddress("1FUvPJ3nXMUrFEWqkjxPe5esqQ2GoCmUAk"),
-        CFreicoinAddress("1LJLBDK8q7yLibK2oYTA6hbD9UpmP6U3QP"),
-        CFreicoinAddress("14E9GEg9T5N9aja1FV2ewNFjMK6wPEgsKb"),
-        CFreicoinAddress("1JYmABbYkUjAyowLwa1zoQj86PEWMBdeZP"),
-        CFreicoinAddress("1NCfTbrEsZrCT3Efyk5AfvqP2xY6NesWHy"),
-        CFreicoinAddress("1Bwd6rcgGLq8sdo3FHHSmh3J7ufqdgMeqi"),
-        CFreicoinAddress("1PzAWHEt2xabgWEki5hTgwtTyuKRS1at39"),
-        CFreicoinAddress("1Fo3r7DWDtJ8Yu2UqngNqKMSw98XgsXehW"),
-        CFreicoinAddress("1H1b6FLd5eqH8Q9Cw8UkZv2nY3xxKTfsH3"),
-        CFreicoinAddress("12x9TqiF9FQU7sqnRiCmrRZmG7dLs9hyG6"),
-        CFreicoinAddress("13VYYQ8K9AFiajev9QdHM6Kj8SqevRT7GS"),
-        CFreicoinAddress("149HFz2K7D4GffQm8t7rKQuWmcwJohsimk"),
-        CFreicoinAddress("1JqwkYTg3ZuWMpjhxrJYgW7E826HYoiBSG"),
-        CFreicoinAddress("1NiyjCKxM33nozwzU2LNtWBPWrWTUpiaAM"),
-        CFreicoinAddress("1LD4F5tA87e7nMwNRuHhgwH6zTFZ1LyoE2"),
-        CFreicoinAddress("1M3wUX9YYrcVSSw6Tncdoic3Fj13okQ63u"),
-        CFreicoinAddress("1PVKsqeVqM4B2ccq915GHeK3aDeruStr24"),
-        CFreicoinAddress("1PKNQqSuPknZ1PaqKkRqa9qYujWKL9KQ7E")
-    };
-
-    static bool fFirstRun = true;
-    if ( fTestNet && fFirstRun ) {
-        for (int i=0; i<320; ++i)
-            vAddresses[i].ToggleTestnet();
-        fFirstRun = false;
-    }
-
-    static CBudget emptyBudget = CBudget(0, std::vector<CBudgetEntry>());
-    if ( nHeight >= EQ_HEIGHT )
-        return emptyBudget;
-
-    std::vector<CBudgetEntry> vBudgetEntries;
-    vBudgetEntries.reserve(1);
-    vBudgetEntries.push_back(CBudgetEntry(1, vAddresses[nHeight*320/EQ_HEIGHT].Get()));
-    mpq qRatio = TITHE_AMOUNT / GetInitialDistributionAmount(nHeight);
-    return CBudget(qRatio, vBudgetEntries);
-}
-
-mpq static GetPerpetualSubsidyAmount(int nHeight)
-{
-    return MPQ_MAX_MONEY / DEMURRAGE_RATE;
-}
-
-CBudget static GetPerpetualSubsidyBudget(int nHeight)
-{
-    static CBudget emptyBudget = CBudget(0, std::vector<CBudgetEntry>());
-    return emptyBudget;
-}
-
-CBudget static GetTransactionFeeBudget(int nHeight)
-{
-    static CBudget emptyBudget = CBudget(0, std::vector<CBudgetEntry>());
-    return emptyBudget;
-}
-
-mpq static GetBlockValue(int nHeight, const mpq& nFees)
-{
-    return GetInitialDistributionAmount(nHeight) +
-           GetPerpetualSubsidyAmount(nHeight) + nFees;
-}
-
-static const int64 nTargetSpacing = 10 * 60;
-static const int64 nOriginalInterval = 2016;
-static const int64 nFilteredInterval =    9;
-static const int64 nOriginalTargetTimespan = nOriginalInterval * nTargetSpacing; // two weeks
-static const int64 nFilteredTargetTimespan = nFilteredInterval * nTargetSpacing; // 1.5 hrs
+// Thanks: Balthazar for suggesting the following fix
+// https://bitcointalk.org/index.php?topic=182430.msg1904506#msg1904506
+static const int64 nReTargetHistoryFact = 4; // look at 4 times the retarget
+                                             // interval into the block history
 
 //
 // minimum amount of work that could possibly be required nTime after
@@ -1371,7 +866,7 @@ unsigned int ComputeMinWork(unsigned int nBase, int64 nTime)
         // Maximum 400% adjustment...
         bnResult *= 4;
         // ... in best-case exactly 4-times-normal target time
-        nTime -= nOriginalTargetTimespan*4;
+        nTime -= nTargetTimespan*4;
     }
     if (bnResult > bnProofOfWorkLimit)
         bnResult = bnProofOfWorkLimit;
@@ -1380,66 +875,14 @@ unsigned int ComputeMinWork(unsigned int nBase, int64 nTime)
 
 unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlock *pblock)
 {
-    static unsigned int nProofOfWorkLimit = bnProofOfWorkLimit.GetCompact();
-
-    #define WINDOW 144
-    static mpq kOne = mpq(1);
-    static mpq kTwoToTheThirtyOne = mpq("2147483648");
-    static mpq kGain = mpq(41, 400);       // 0.025
-    static mpq kLimiterUp = mpq(211, 200); // 1.055
-    static mpq kLimiterDown = mpq(200, 211);
-    static mpq kTargetInterval = i64_to_mpq(nTargetSpacing);
-    static int32_t kFilterCoeff[WINDOW] = {
-         -845859,  -459003,  -573589,  -703227,  -848199, -1008841,
-        -1183669, -1372046, -1573247, -1787578, -2011503, -2243311,
-        -2482346, -2723079, -2964681, -3202200, -3432186, -3650186,
-        -3851924, -4032122, -4185340, -4306430, -4389146, -4427786,
-        -4416716, -4349289, -4220031, -4022692, -3751740, -3401468,
-        -2966915, -2443070, -1825548, -1110759,  -295281,   623307,
-         1646668,  2775970,  4011152,  5351560,  6795424,  8340274,
-         9982332, 11717130, 13539111, 15441640, 17417389, 19457954,
-        21554056, 23695744, 25872220, 28072119, 30283431, 32493814,
-        34690317, 36859911, 38989360, 41065293, 43074548, 45004087,
-        46841170, 48573558, 50189545, 51678076, 53028839, 54232505,
-        55280554, 56165609, 56881415, 57422788, 57785876, 57968085,
-        57968084, 57785876, 57422788, 56881415, 56165609, 55280554,
-        54232505, 53028839, 51678076, 50189545, 48573558, 46841170,
-        45004087, 43074548, 41065293, 38989360, 36859911, 34690317,
-        32493814, 30283431, 28072119, 25872220, 23695744, 21554057,
-        19457953, 17417389, 15441640, 13539111, 11717130,  9982332,
-         8340274,  6795424,  5351560,  4011152,  2775970,  1646668,
-          623307,  -295281, -1110759, -1825548, -2443070, -2966915,
-        -3401468, -3751740, -4022692, -4220031, -4349289, -4416715,
-        -4427787, -4389146, -4306430, -4185340, -4032122, -3851924,
-        -3650186, -3432186, -3202200, -2964681, -2723079, -2482346,
-        -2243311, -2011503, -1787578, -1573247, -1372046, -1183669,
-        -1008841,  -848199,  -703227,  -573589,  -459003,  -845858
-    };
+    unsigned int nProofOfWorkLimit = bnProofOfWorkLimit.GetCompact();
 
     // Genesis block
     if (pindexLast == NULL)
         return nProofOfWorkLimit;
 
-    // Special, one-time adjustment due to the "hash crash" of Apr/May 2013
-    // which rushed the introduction of the new difficulty adjustment filter.
-    // We adjust back to the difficulty prior to the last adjustment.
-    if ( !fTestNet && pindexLast->nHeight==(DIFF_FILTER_THRESHOLD-1) )
-        return 0x1b01c13a;
-
-    bool fUseFilter =
-         (fTestNet && pindexLast->nHeight>=(DIFF_FILTER_THRESHOLD_TESTNET-1)) ||
-        (!fTestNet && pindexLast->nHeight>=(DIFF_FILTER_THRESHOLD-1));
-
-    int64 nInterval       = nFilteredInterval;
-    int64 nTargetTimespan = nFilteredTargetTimespan;
-    if ( !fUseFilter ) {
-        nInterval       = nOriginalInterval;
-        nTargetTimespan = nOriginalTargetTimespan;
-    }
-
     // Only change once per interval
-    if (  (fUseFilter && (pindexLast->nHeight+1) % nInterval != 0) ||
-         (!fUseFilter && (pindexLast->nHeight+1) % 2016 != 0))
+    if ((pindexLast->nHeight+1) % nInterval != 0)
     {
         // Special difficulty rule for testnet:
         if (fTestNet)
@@ -1461,66 +904,46 @@ unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBl
         return pindexLast->nBits;
     }
 
-    mpq dAdjustmentFactor;
-
-    if ( fUseFilter ) {
-        int32_t vTimeDelta[WINDOW];
-
-        size_t idx = 0;
-        const CBlockIndex *pitr = pindexLast;
-        for ( ; idx!=WINDOW && pitr && pitr->pprev; ++idx, pitr=pitr->pprev )
-            vTimeDelta[idx] = (int32_t)(pitr->GetBlockTime() - pitr->pprev->GetBlockTime());
-        for ( ; idx!=WINDOW; ++idx )
-            vTimeDelta[idx] = (int32_t)nTargetSpacing;
-
-        int64_t vFilteredTime = 0;
-        for ( idx=0; idx<WINDOW; ++idx )
-            vFilteredTime += (int64_t)kFilterCoeff[idx] * (int64_t)vTimeDelta[idx];
-        mpq dFilteredInterval = i64_to_mpq(vFilteredTime) / kTwoToTheThirtyOne;
-
-        dAdjustmentFactor = kOne - kGain * (dFilteredInterval - kTargetInterval) / kTargetInterval;
-        if ( dAdjustmentFactor > kLimiterUp )
-            dAdjustmentFactor = kLimiterUp;
-        else if ( dAdjustmentFactor < kLimiterDown )
-            dAdjustmentFactor = kLimiterDown;
-    } else {
-        // This fixes an issue where a 51% attack can change difficulty at will.
-        // Go back the full period unless it's the first retarget after genesis.
-        // Code courtesy of Art Forz
-        int blockstogoback = nInterval-1;
-        if ((pindexLast->nHeight+1) != nInterval)
-            blockstogoback = nInterval;
-
-        // Go back by what we want to be 14 days worth of blocks
-        const CBlockIndex* pindexFirst = pindexLast;
-        for (int i = 0; pindexFirst && i < blockstogoback; i++)
-            pindexFirst = pindexFirst->pprev;
-        assert(pindexFirst);
-
-        // Limit adjustment step
-        int64 nActualTimespan = pindexLast->GetBlockTime() - pindexFirst->GetBlockTime();
-        printf("  nActualTimespan = %"PRI64d"  before bounds\n", nActualTimespan);
-        if (nActualTimespan < nTargetTimespan/4)
-            nActualTimespan = nTargetTimespan/4;
-        if (nActualTimespan > nTargetTimespan*4)
-            nActualTimespan = nTargetTimespan*4;
-
-        dAdjustmentFactor = i64_to_mpq(nTargetTimespan) /
-                            i64_to_mpq(nActualTimespan);
+    // Fabcoin: This fixes an issue where a 51% attack can change difficulty at will.
+    // Go back the full period unless it's the first retarget after genesis. Code courtesy of Art Forz
+    int blockstogoback = nInterval-1;
+    if ((pindexLast->nHeight+1) != nInterval)
+        blockstogoback = nInterval;
+    if (pindexLast->nHeight > COINFIX1_BLOCK) {
+        blockstogoback = nReTargetHistoryFact * nInterval;
     }
+
+    // Go back by what we want to be nReTargetHistoryFact*nInterval blocks
+    const CBlockIndex* pindexFirst = pindexLast;
+    for (int i = 0; pindexFirst && i < blockstogoback; i++)
+        pindexFirst = pindexFirst->pprev;
+    assert(pindexFirst);
+
+    // Limit adjustment step
+    int64 nActualTimespan = 0;
+    if (pindexLast->nHeight > COINFIX1_BLOCK)
+        // obtain average actual timespan
+        nActualTimespan = (pindexLast->GetBlockTime() - pindexFirst->GetBlockTime())/nReTargetHistoryFact;
+    else
+        nActualTimespan = pindexLast->GetBlockTime() - pindexFirst->GetBlockTime();
+    printf("  nActualTimespan = %"PRI64d"  before bounds\n", nActualTimespan);
+    if (nActualTimespan < nTargetTimespan/4)
+        nActualTimespan = nTargetTimespan/4;
+    if (nActualTimespan > nTargetTimespan*4)
+        nActualTimespan = nTargetTimespan*4;
 
     // Retarget
     CBigNum bnNew;
     bnNew.SetCompact(pindexLast->nBits);
-    bnNew *= mpz_to_i64(dAdjustmentFactor.get_den());
-    bnNew /= mpz_to_i64(dAdjustmentFactor.get_num());
+    bnNew *= nActualTimespan;
+    bnNew /= nTargetTimespan;
 
     if (bnNew > bnProofOfWorkLimit)
         bnNew = bnProofOfWorkLimit;
 
     /// debug print
     printf("GetNextWorkRequired RETARGET\n");
-    printf("dAdjustmentFactor = %g\n", dAdjustmentFactor.get_d());
+    printf("nTargetTimespan = %"PRI64d"    nActualTimespan = %"PRI64d"\n", nTargetTimespan, nActualTimespan);
     printf("Before: %08x  %s\n", pindexLast->nBits, CBigNum().SetCompact(pindexLast->nBits).getuint256().ToString().c_str());
     printf("After:  %08x  %s\n", bnNew.GetCompact(), bnNew.getuint256().ToString().c_str());
 
@@ -1580,7 +1003,7 @@ void static InvalidChainFound(CBlockIndex* pindexNew)
       hashBestChain.ToString().substr(0,20).c_str(), nBestHeight, bnBestChainWork.ToString().c_str(),
       DateTimeStrFormat("%x %H:%M:%S", pindexBest->GetBlockTime()).c_str());
     if (pindexBest && bnBestInvalidWork > bnBestChainWork + pindexBest->GetBlockWork() * 6)
-        printf("InvalidChainFound: Warning: Displayed transactions may not be correct! You may need to upgrade, or other nodes may need to upgrade.\n");
+        printf("InvalidChainFound: WARNING: Displayed transactions may not be correct!  You may need to upgrade, or other nodes may need to upgrade.\n");
 }
 
 void CBlock::UpdateTime(const CBlockIndex* pindexPrev)
@@ -1631,7 +1054,7 @@ bool CTransaction::DisconnectInputs(CTxDB& txdb)
     // Remove transaction from index
     // This can fail if a duplicate of this transaction was in a chain that got
     // reorganized away. This is only possible if this transaction was completely
-    // spent, so erasing it would be a no-op anyway.
+    // spent, so erasing it would be a no-op anway.
     txdb.EraseTxIndex(*this);
 
     return true;
@@ -1639,7 +1062,7 @@ bool CTransaction::DisconnectInputs(CTxDB& txdb)
 
 
 bool CTransaction::FetchInputs(CTxDB& txdb, const map<uint256, CTxIndex>& mapTestPool,
-                               bool fBlock, bool fMiner, MapPrevTx& inputsRet, bool& fInvalid) const
+                               bool fBlock, bool fMiner, MapPrevTx& inputsRet, bool& fInvalid)
 {
     // FetchInputs can return false either because we just haven't seen some inputs
     // (in which case the transaction should be stored as an orphan)
@@ -1694,7 +1117,7 @@ bool CTransaction::FetchInputs(CTxDB& txdb, const map<uint256, CTxIndex>& mapTes
         }
     }
 
-    // Make sure all prevout.n indexes are valid:
+    // Make sure all prevout.n's are valid:
     for (unsigned int i = 0; i < vin.size(); i++)
     {
         const COutPoint prevout = vin[i].prevout;
@@ -1706,7 +1129,7 @@ bool CTransaction::FetchInputs(CTxDB& txdb, const map<uint256, CTxIndex>& mapTes
             // Revisit this if/when transaction replacement is implemented and allows
             // adding inputs:
             fInvalid = true;
-            return DoS(100, error("FetchInputs() : %s prevout.n out of range %d %"PRIszu" %"PRIszu" prev tx %s\n%s", GetHash().ToString().substr(0,10).c_str(), prevout.n, txPrev.vout.size(), txindex.vSpent.size(), prevout.hash.ToString().substr(0,10).c_str(), txPrev.ToString().c_str()));
+            return DoS(100, error("FetchInputs() : %s prevout.n out of range %d %d %d prev tx %s\n%s", GetHash().ToString().substr(0,10).c_str(), prevout.n, txPrev.vout.size(), txindex.vSpent.size(), prevout.hash.ToString().substr(0,10).c_str(), txPrev.ToString().c_str()));
         }
     }
 
@@ -1726,79 +1149,15 @@ const CTxOut& CTransaction::GetOutputFor(const CTxIn& input, const MapPrevTx& in
     return txPrev.vout[input.prevout.n];
 }
 
-mpq GetTimeAdjustedValue(int64 nInitialValue, int nRelativeDepth)
-{
-    return GetTimeAdjustedValue(i64_to_mpq(nInitialValue), nRelativeDepth);
-}
-
-mpq GetTimeAdjustedValue(const mpz &zInitialValue, int nRelativeDepth)
-{
-    mpq initial_value(zInitialValue);
-    return GetTimeAdjustedValue(initial_value, nRelativeDepth);
-}
-
-mpq GetTimeAdjustedValue(const mpq& qInitialValue, int nRelativeDepth)
-{
-    if ( 0 == nRelativeDepth )
-        return qInitialValue;
-
-    mpfr_t rate, mp;
-    mpfr_inits2(113, rate, mp, (mpfr_ptr) 0);
-    mpfr_set_ui(mp,       DEMURRAGE_RATE-1, GMP_RNDN);
-    mpfr_div_ui(rate, mp, DEMURRAGE_RATE,   GMP_RNDN);
-    mpfr_pow_si(mp, rate, nRelativeDepth,   GMP_RNDN);
-
-    int exponent;
-    mpz_t numerator, denominator;
-    mpz_init(numerator);
-    mpz_init(denominator);
-    exponent = mpfr_get_z_exp(numerator, mp);
-    mpz_set_ui(denominator, 1);
-    if ( exponent >= 0 )
-        mpz_mul_2exp(numerator, numerator, exponent);
-    else
-        mpz_mul_2exp(denominator, denominator, -exponent);
-
-    mpfr_clears(rate, mp, (mpfr_ptr) 0);
-
-    mpq adjustment;
-    mpz_set(adjustment.get_num_mpz_t(), numerator);
-    mpz_set(adjustment.get_den_mpz_t(), denominator);
-    adjustment.canonicalize();
-
-    mpz_clear(numerator);
-    mpz_clear(denominator);
-
-    return adjustment * qInitialValue;
-}
-
-mpq GetPresentValue(const CTransaction& tx, const CTxOut& output, int nBlockHeight)
-{
-    return GetTimeAdjustedValue(output.nValue, nBlockHeight-tx.nRefHeight);
-}
-
-mpq CTransaction::GetValueIn(const MapPrevTx& inputs) const
+int64 CTransaction::GetValueIn(const MapPrevTx& inputs) const
 {
     if (IsCoinBase())
         return 0;
 
-    mpq nResult = 0, nInput;
+    int64 nResult = 0;
     for (unsigned int i = 0; i < vin.size(); i++)
     {
-        MapPrevTx::const_iterator mi = inputs.find(vin[i].prevout.hash);
-        if (mi == inputs.end())
-            throw std::runtime_error("CTransaction::GetValueIn() : prevout.hash not found");
-
-        const CTransaction& txPrev = (mi->second).second;
-        if (vin[i].prevout.n >= txPrev.vout.size())
-            throw std::runtime_error("CTransaction::GetValueIn() : prevout.n out of range");
-
-        const CTxOut& txOut = txPrev.vout[vin[i].prevout.n];
-        nInput = GetPresentValue(txPrev, txOut, nRefHeight);
-        nResult += nInput;
-        // Check for negative or overflow input values
-        if (!MoneyRange(nInput) || !MoneyRange(nResult))
-            throw DoS(100, error("CTransaction::GetValueIn() : txin values out of range"));
+        nResult += GetOutputFor(vin[i], inputs).nValue;
     }
     return nResult;
 
@@ -1825,10 +1184,12 @@ bool CTransaction::ConnectInputs(MapPrevTx inputs,
 {
     // Take over previous transactions' spent pointers
     // fBlock is true when this is called from AcceptBlock when a new best-block is added to the blockchain
-    // fMiner is true when called from the internal freicoin miner
+    // fMiner is true when called from the internal smallchange miner
     // ... both are false when called from CTransaction::AcceptToMemoryPool
     if (!IsCoinBase())
     {
+        int64 nValueIn = 0;
+        int64 nFees = 0;
         for (unsigned int i = 0; i < vin.size(); i++)
         {
             COutPoint prevout = vin[i].prevout;
@@ -1837,7 +1198,7 @@ bool CTransaction::ConnectInputs(MapPrevTx inputs,
             CTransaction& txPrev = inputs[prevout.hash].second;
 
             if (prevout.n >= txPrev.vout.size() || prevout.n >= txindex.vSpent.size())
-                return DoS(100, error("ConnectInputs() : %s prevout.n out of range %d %"PRIszu" %"PRIszu" prev tx %s\n%s", GetHash().ToString().substr(0,10).c_str(), prevout.n, txPrev.vout.size(), txindex.vSpent.size(), prevout.hash.ToString().substr(0,10).c_str(), txPrev.ToString().c_str()));
+                return DoS(100, error("ConnectInputs() : %s prevout.n out of range %d %d %d prev tx %s\n%s", GetHash().ToString().substr(0,10).c_str(), prevout.n, txPrev.vout.size(), txindex.vSpent.size(), prevout.hash.ToString().substr(0,10).c_str(), txPrev.ToString().c_str()));
 
             // If prev is coinbase, check that it's matured
             if (txPrev.IsCoinBase())
@@ -1845,12 +1206,12 @@ bool CTransaction::ConnectInputs(MapPrevTx inputs,
                     if (pindex->nBlockPos == txindex.pos.nBlockPos && pindex->nFile == txindex.pos.nFile)
                         return error("ConnectInputs() : tried to spend coinbase at depth %d", pindexBlock->nHeight - pindex->nHeight);
 
+            // Check for negative or overflow input values
+            nValueIn += txPrev.vout[prevout.n].nValue;
+            if (!MoneyRange(txPrev.vout[prevout.n].nValue) || !MoneyRange(nValueIn))
+                return DoS(100, error("ConnectInputs() : txin values out of range"));
+
         }
-        mpq nValueIn = GetValueIn(inputs);
-        if ( ! MoneyRange(nValueIn) )
-            return DoS(100, error("ConnectInputs() : txin values out of range"));
-        if ( GetValueOut() > nValueIn )
-            return DoS(100, error("ConnectInputs() : txout larger than txin"));
         // The first loop above does all the inexpensive checks.
         // Only if ALL inputs pass do we perform expensive ECDSA signature checks.
         // Helps prevent CPU exhaustion attacks.
@@ -1860,9 +1221,6 @@ bool CTransaction::ConnectInputs(MapPrevTx inputs,
             assert(inputs.count(prevout.hash) > 0);
             CTxIndex& txindex = inputs[prevout.hash].first;
             CTransaction& txPrev = inputs[prevout.hash].second;
-
-            if ( txPrev.nRefHeight > nRefHeight )
-                return DoS(100, error("ConnectInputs() : input height less than output height"));
 
             // Check for conflicts (double-spend)
             // This doesn't trigger the DoS code on purpose; if it did, it would make it easier
@@ -1897,13 +1255,23 @@ bool CTransaction::ConnectInputs(MapPrevTx inputs,
             }
         }
 
+        if (nValueIn < GetValueOut())
+            return DoS(100, error("ConnectInputs() : %s value in < value out", GetHash().ToString().substr(0,10).c_str()));
+
+        // Tally transaction fees
+        int64 nTxFee = nValueIn - GetValueOut();
+        if (nTxFee < 0)
+            return DoS(100, error("ConnectInputs() : %s nTxFee < 0", GetHash().ToString().substr(0,10).c_str()));
+        nFees += nTxFee;
+        if (!MoneyRange(nFees))
+            return DoS(100, error("ConnectInputs() : nFees out of range"));
     }
 
     return true;
 }
 
 
-bool CTransaction::ClientConnectInputs(CTxDB& txdb)
+bool CTransaction::ClientConnectInputs()
 {
     if (IsCoinBase())
         return false;
@@ -1911,6 +1279,7 @@ bool CTransaction::ClientConnectInputs(CTxDB& txdb)
     // Take over previous transactions' spent pointers
     {
         LOCK(mempool.cs);
+        int64 nValueIn = 0;
         for (unsigned int i = 0; i < vin.size(); i++)
         {
             // Get prev tx from single transactions in memory
@@ -1935,30 +1304,14 @@ bool CTransaction::ClientConnectInputs(CTxDB& txdb)
             //
             // // Flag outpoints as used
             // txPrev.vout[prevout.n].posNext = posThisTx;
-        }
 
-        MapPrevTx mapInputs;
-        map<uint256, CTxIndex> mapUnused;
-        bool fInvalid = false;
-        if (!FetchInputs(txdb, mapUnused, false, false, mapInputs, fInvalid))
-        {
-            if (fInvalid)
-                return error("CTransaction::ClientConnectInputs() : FetchInputs found invalid tx");
+            nValueIn += txPrev.vout[prevout.n].nValue;
+
+            if (!MoneyRange(txPrev.vout[prevout.n].nValue) || !MoneyRange(nValueIn))
+                return error("ClientConnectInputs() : txin values out of range");
+        }
+        if (GetValueOut() > nValueIn)
             return false;
-        }
-
-        for (unsigned int i = 0; i < vin.size(); i++)
-        {
-            CTransaction& txPrev = mapInputs[vin[i].prevout.hash].second;
-            if ( txPrev.nRefHeight > nRefHeight )
-                return DoS(100, error("ConnectInputs() : input height less than output height"));
-        }
-
-        mpq nValueIn = GetValueIn(mapInputs);
-        if ( ! MoneyRange(nValueIn) )
-            return error("ClientConnectInputs() : txin values out of range");
-        if ( GetValueOut() > nValueIn )
-            return error("ClientConnectInputs() : value out larger than value in");
     }
 
     return true;
@@ -1987,10 +1340,10 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex)
     return true;
 }
 
-bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
+bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex)
 {
     // Check it again in case a previous version let a bad block in
-    if (!CheckBlock(!fJustCheck, !fJustCheck))
+    if (!CheckBlock())
         return false;
 
     // Do not allow blocks that contain transactions which 'overwrite' older transactions,
@@ -2000,30 +1353,20 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
     // being sent to another address.
     // See BIP30 and http://r6.ca/blog/20120206T005236Z.html for more information.
     // This logic is not necessary for memory pool transactions, as AcceptToMemoryPool
-    // already refuses previously-known transaction ids entirely.
-    // This rule was originally applied all blocks whose timestamp was after March 15, 2012, 0:00 UTC.
-    // Now that the whole chain is irreversibly beyond that time it is applied to all blocks except the
-    // two in the chain that violate it. This prevents exploiting the issue against nodes in their
-    // initial block download.
-    bool fEnforceBIP30 = (!pindex->phashBlock) || // Enforce on CreateNewBlock invocations which don't have a hash.
-                          !((pindex->nHeight==91842 && pindex->GetBlockHash() == uint256("0x00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec")) ||
-                           (pindex->nHeight==91880 && pindex->GetBlockHash() == uint256("0x00000000000743f190a18c5577a3c2d2a1f610ae9601ac046a38084ccb7cd721")));
+    // already refuses previously-known transaction id's entirely.
+    // This rule applies to all blocks whose timestamp is after October 1, 2012, 0:00 UTC.
+    int64 nBIP30SwitchTime = 1349049600;
+    bool fEnforceBIP30 = (pindex->nTime > nBIP30SwitchTime);
 
-    // BIP16 didn't become active until Apr 1 2012
-    int64 nBIP16SwitchTime = 1333238400;
+    // BIP16 didn't become active until October 1 2012
+    int64 nBIP16SwitchTime = 1349049600;
     bool fStrictPayToScriptHash = (pindex->nTime >= nBIP16SwitchTime);
 
     //// issue here: it doesn't know the version
-    unsigned int nTxPos;
-    if (fJustCheck)
-        // FetchInputs treats CDiskTxPos(1,1,1) as a special "refer to memorypool" indicator
-        // Since we're just checking the block and not actually connecting it, it might not (and probably shouldn't) be on the disk to get the transaction from
-        nTxPos = 1;
-    else
-        nTxPos = pindex->nBlockPos + ::GetSerializeSize(CBlock(), SER_DISK, CLIENT_VERSION) - 1 + GetSizeOfCompactSize(vtx.size());
+    unsigned int nTxPos = pindex->nBlockPos + ::GetSerializeSize(CBlock(), SER_DISK, CLIENT_VERSION) - 1 + GetSizeOfCompactSize(vtx.size());
 
     map<uint256, CTxIndex> mapQueuedChanges;
-    mpq nFees = 0;
+    int64 nFees = 0;
     unsigned int nSigOps = 0;
     BOOST_FOREACH(CTransaction& tx, vtx)
     {
@@ -2043,15 +1386,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
             return DoS(100, error("ConnectBlock() : too many sigops"));
 
         CDiskTxPos posThisTx(pindex->nFile, pindex->nBlockPos, nTxPos);
-        if (!fJustCheck)
-            nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
+        nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
 
         MapPrevTx mapInputs;
         if (!tx.IsCoinBase())
         {
             bool fInvalid;
             if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
-                return error("ConnectBlock() : unable to fetch inputs for transaction %s", tx.GetHash().ToString().c_str());
+                return false;
 
             if (fStrictPayToScriptHash)
             {
@@ -2063,45 +1405,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                     return DoS(100, error("ConnectBlock() : too many sigops"));
             }
 
-            if ( tx.nRefHeight > pindex->nHeight )
-                return DoS(100, error("ConnectBlock() : tx height > block height"));
-
-            mpq qNet = tx.GetValueIn(mapInputs) - tx.GetValueOut();
-            nFees += GetTimeAdjustedValue(qNet, pindex->nHeight - tx.nRefHeight);
+            nFees += tx.GetValueIn(mapInputs)-tx.GetValueOut();
 
             if (!tx.ConnectInputs(mapInputs, mapQueuedChanges, posThisTx, pindex, true, false, fStrictPayToScriptHash))
-                return error("ConnectBlock() : unable to connect inputs");
+                return false;
         }
 
         mapQueuedChanges[hashTx] = CTxIndex(posThisTx, tx.vout.size());
     }
-
-    if ( vtx[0].nRefHeight != pindex->nHeight )
-        return DoS(100, error("ConnectBlock() : coinbase height != block height"));
-
-    mpq qActualCoinbaseValue = GetTimeAdjustedValue(vtx[0].GetValueOut(), pindex->nHeight - vtx[0].nRefHeight);
-    mpq qAllowedCoinbaseValue = GetBlockValue(pindex->nHeight, nFees);
-    if ( qActualCoinbaseValue > qAllowedCoinbaseValue )
-        return error("ConnectBlock() : coinbase pays too much (actual=%s vs limit=%s)", FormatMoney(qActualCoinbaseValue).c_str(), FormatMoney(qAllowedCoinbaseValue).c_str());
-
-    std::map<CTxDestination, mpq> mapBudget;
-
-    mpq nIDAmount = GetInitialDistributionAmount(pindex->nHeight);
-    CBudget budgetID = GetInitialDistributionBudget(pindex->nHeight);
-    ApplyBudget(nIDAmount, budgetID, mapBudget);
-
-    mpq nPSAmount = GetPerpetualSubsidyAmount(pindex->nHeight);
-    CBudget budgetPS = GetPerpetualSubsidyBudget(pindex->nHeight);
-    ApplyBudget(nPSAmount, budgetPS, mapBudget);
-
-    CBudget budgetTF = GetTransactionFeeBudget(pindex->nHeight);
-    ApplyBudget(nFees, budgetTF, mapBudget);
-
-    if (!VerifyBudget(mapBudget, vtx, pindex->nHeight))
-        return error("ConnectBlock() : block does not meet budget requirements");
-
-    if (fJustCheck)
-        return true;
 
     // Write queued txindex changes
     for (map<uint256, CTxIndex>::iterator mi = mapQueuedChanges.begin(); mi != mapQueuedChanges.end(); ++mi)
@@ -2109,6 +1420,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
         if (!txdb.UpdateTxIndex((*mi).first, (*mi).second))
             return error("ConnectBlock() : UpdateTxIndex failed");
     }
+
+    if (vtx[0].GetValueOut() > GetBlockValue(pindex->nHeight, nFees))
+        return false;
 
     // Update block index on disk without changing it in memory.
     // The memory index structure will be changed after the db commits.
@@ -2156,8 +1470,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
         vConnect.push_back(pindex);
     reverse(vConnect.begin(), vConnect.end());
 
-    printf("REORGANIZE: Disconnect %"PRIszu" blocks; %s..%s\n", vDisconnect.size(), pfork->GetBlockHash().ToString().substr(0,20).c_str(), pindexBest->GetBlockHash().ToString().substr(0,20).c_str());
-    printf("REORGANIZE: Connect %"PRIszu" blocks; %s..%s\n", vConnect.size(), pfork->GetBlockHash().ToString().substr(0,20).c_str(), pindexNew->GetBlockHash().ToString().substr(0,20).c_str());
+    printf("REORGANIZE: Disconnect %i blocks; %s..%s\n", vDisconnect.size(), pfork->GetBlockHash().ToString().substr(0,20).c_str(), pindexBest->GetBlockHash().ToString().substr(0,20).c_str());
+    printf("REORGANIZE: Connect %i blocks; %s..%s\n", vConnect.size(), pfork->GetBlockHash().ToString().substr(0,20).c_str(), pindexNew->GetBlockHash().ToString().substr(0,20).c_str());
 
     // Disconnect shorter branch
     vector<CTransaction> vResurrect;
@@ -2285,7 +1599,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
         }
 
         if (!vpindexSecondary.empty())
-            printf("Postponing %"PRIszu" reconnects\n", vpindexSecondary.size());
+            printf("Postponing %i reconnects\n", vpindexSecondary.size());
 
         // Switch to new best branch
         if (!Reorganize(txdb, pindexIntermediate))
@@ -2295,7 +1609,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
             return error("SetBestChain() : Reorganize failed");
         }
 
-        // Connect further blocks
+        // Connect futher blocks
         BOOST_REVERSE_FOREACH(CBlockIndex *pindex, vpindexSecondary)
         {
             CBlock block;
@@ -2325,7 +1639,6 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
     // New best block
     hashBestChain = hash;
     pindexBest = pindexNew;
-    pblockindexFBBHLast = NULL;
     nBestHeight = pindexBest->nHeight;
     bnBestChainWork = pindexNew->bnChainWork;
     nTimeBestReceived = GetTime();
@@ -2347,9 +1660,9 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
         }
         if (nUpgraded > 0)
             printf("SetBestChain: %d of last 100 blocks above version %d\n", nUpgraded, CBlock::CURRENT_VERSION);
-        if (nUpgraded > 100/2)
+	//        if (nUpgraded > 100/2)
             // strMiscWarning is read by GetWarnings(), called by Qt and the JSON-RPC code to warn the user:
-            strMiscWarning = _("Warning: This version is obsolete, upgrade required!");
+	//            strMiscWarning = _("Warning: this version is obsolete, upgrade required");
     }
 
     std::string strCmd = GetArg("-blocknotify", "");
@@ -2414,7 +1727,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
 
 
 
-bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot) const
+bool CBlock::CheckBlock() const
 {
     // These are checks that are independent of context
     // that can be verified before saving an orphan block.
@@ -2424,7 +1737,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot) const
         return DoS(100, error("CheckBlock() : size limits failed"));
 
     // Check proof of work matches claimed amount
-    if (fCheckPOW && !CheckProofOfWork(GetHash(), nBits))
+    if (!CheckProofOfWork(GetPoWHash(), nBits))
         return DoS(50, error("CheckBlock() : proof of work failed"));
 
     // Check timestamp
@@ -2461,8 +1774,8 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot) const
     if (nSigOps > MAX_BLOCK_SIGOPS)
         return DoS(100, error("CheckBlock() : out-of-bounds SigOpCount"));
 
-    // Check merkle root
-    if (fCheckMerkleRoot && hashMerkleRoot != BuildMerkleTree())
+    // Check merkleroot
+    if (hashMerkleRoot != BuildMerkleTree())
         return DoS(100, error("CheckBlock() : hashMerkleRoot mismatch"));
 
     return true;
@@ -2497,29 +1810,7 @@ bool CBlock::AcceptBlock()
 
     // Check that the block chain matches the known block chain up to a checkpoint
     if (!Checkpoints::CheckBlock(nHeight, hash))
-        return DoS(100, error("AcceptBlock() : rejected by checkpoint lock-in at %d", nHeight));
-
-    // Reject block.nVersion=1 blocks when 95% (75% on testnet) of the network has upgraded:
-    if (nVersion < 2)
-    {
-        if ((!fTestNet && CBlockIndex::IsSuperMajority(2, pindexPrev, 950, 1000)) ||
-            (fTestNet && CBlockIndex::IsSuperMajority(2, pindexPrev, 75, 100)))
-        {
-            return error("AcceptBlock() : rejected nVersion=1 block");
-        }
-    }
-    // Enforce block.nVersion=2 rule that the coinbase starts with serialized block height
-    if (nVersion >= 2)
-    {
-        // if 750 of the last 1,000 blocks are version 2 or greater (51/100 if testnet):
-        if ((!fTestNet && CBlockIndex::IsSuperMajority(2, pindexPrev, 750, 1000)) ||
-            (fTestNet && CBlockIndex::IsSuperMajority(2, pindexPrev, 51, 100)))
-        {
-            CScript expect = CScript() << nHeight;
-            if (!std::equal(expect.begin(), expect.end(), vtx[0].vin[0].scriptSig.begin()))
-                return DoS(100, error("AcceptBlock() : block height mismatch in coinbase"));
-        }
-    }
+        return DoS(100, error("AcceptBlock() : rejected by checkpoint lockin at %d", nHeight));
 
     // Write block to history file
     if (!CheckDiskSpace(::GetSerializeSize(*this, SER_DISK, CLIENT_VERSION)))
@@ -2542,18 +1833,6 @@ bool CBlock::AcceptBlock()
     }
 
     return true;
-}
-
-bool CBlockIndex::IsSuperMajority(int minVersion, const CBlockIndex* pstart, unsigned int nRequired, unsigned int nToCheck)
-{
-    unsigned int nFound = 0;
-    for (unsigned int i = 0; i < nToCheck && nFound < nRequired && pstart != NULL; i++)
-    {
-        if (pstart->nVersion >= minVersion)
-            ++nFound;
-        pstart = pstart->pprev;
-    }
-    return (nFound >= nRequired);
 }
 
 bool ProcessBlock(CNode* pfrom, CBlock* pblock)
@@ -2580,9 +1859,6 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 pfrom->Misbehaving(100);
             return error("ProcessBlock() : block with timestamp before last checkpoint");
         }
-#if 0
-        // Now that we are using a FIR filter (see above) this is no longer
-        // a straightforward calculation.
         CBigNum bnNewBlock;
         bnNewBlock.SetCompact(pblock->nBits);
         CBigNum bnRequired;
@@ -2593,24 +1869,20 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 pfrom->Misbehaving(100);
             return error("ProcessBlock() : block with too little proof-of-work");
         }
-#endif
     }
 
 
-    // If we don't already have its previous block, shunt it off to holding area until we get it
+    // If don't already have its previous block, shunt it off to holding area until we get it
     if (!mapBlockIndex.count(pblock->hashPrevBlock))
     {
         printf("ProcessBlock: ORPHAN BLOCK, prev=%s\n", pblock->hashPrevBlock.ToString().substr(0,20).c_str());
+        CBlock* pblock2 = new CBlock(*pblock);
+        mapOrphanBlocks.insert(make_pair(hash, pblock2));
+        mapOrphanBlocksByPrev.insert(make_pair(pblock2->hashPrevBlock, pblock2));
 
-        // Accept orphans as long as there is a node to request its parents from
-        if (pfrom) {
-            CBlock* pblock2 = new CBlock(*pblock);
-            mapOrphanBlocks.insert(make_pair(hash, pblock2));
-            mapOrphanBlocksByPrev.insert(make_pair(pblock2->hashPrevBlock, pblock2));
-
-            // Ask this guy to fill in what we're missing
+        // Ask this guy to fill in what we're missing
+        if (pfrom)
             pfrom->PushGetBlocks(pindexBest, GetOrphanRoot(pblock2));
-        }
         return true;
     }
 
@@ -2656,27 +1928,21 @@ bool CheckDiskSpace(uint64 nAdditionalBytes)
     if (nFreeBytesAvailable < nMinDiskSpace + nAdditionalBytes)
     {
         fShutdown = true;
-        string strMessage = _("Warning: Disk space is low!");
+        string strMessage = _("Warning: Disk space is low");
         strMiscWarning = strMessage;
         printf("*** %s\n", strMessage.c_str());
-        uiInterface.ThreadSafeMessageBox(strMessage, "Freicoin", CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
+        uiInterface.ThreadSafeMessageBox(strMessage, "SmallChange", CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
         StartShutdown();
         return false;
     }
     return true;
 }
 
-static filesystem::path BlockFilePath(unsigned int nFile)
-{
-    string strBlockFn = strprintf("blk%04u.dat", nFile);
-    return GetDataDir() / strBlockFn;
-}
-
 FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszMode)
 {
     if ((nFile < 1) || (nFile == (unsigned int) -1))
         return NULL;
-    FILE* file = fopen(BlockFilePath(nFile).string().c_str(), pszMode);
+    FILE* file = fopen((GetDataDir() / strprintf("blk%04d.dat", nFile)).string().c_str(), pszMode);
     if (!file)
         return NULL;
     if (nBlockPos != 0 && !strchr(pszMode, 'a') && !strchr(pszMode, 'w'))
@@ -2702,8 +1968,8 @@ FILE* AppendBlockFile(unsigned int& nFileRet)
             return NULL;
         if (fseek(file, 0, SEEK_END) != 0)
             return NULL;
-        // FAT32 file size max 4GB, fseek and ftell max 2GB, so we must stay under 2GB
-        if (ftell(file) < (long)(0x7F000000 - MAX_SIZE))
+        // FAT32 filesize max 4GB, fseek and ftell max 2GB, so we must stay under 2GB
+        if (ftell(file) < 0x7F000000 - MAX_SIZE)
         {
             nFileRet = nCurrentBlockFile;
             return file;
@@ -2717,11 +1983,11 @@ bool LoadBlockIndex(bool fAllowNew)
 {
     if (fTestNet)
     {
-        pchMessageStart[0] = 0x5e;
-        pchMessageStart[1] = 0xd6;
-        pchMessageStart[2] = 0x7c;
-        pchMessageStart[3] = 0xf3;
-        hashGenesisBlock = uint256("0x00000000a52504ffe3420a43bd385ef24f81838921a903460b235d95f37cd65e");
+        pchMessageStart[0] = 0xfb;
+        pchMessageStart[1] = 0xc0;
+        pchMessageStart[2] = 0xb8;
+        pchMessageStart[3] = 0xdb;
+        hashGenesisBlock = uint256("0xa50faf35e1dddf4a076a907fbcef6d9d1595390cdb1c818a35dae53b67ad0aa8");
     }
 
     //
@@ -2739,143 +2005,79 @@ bool LoadBlockIndex(bool fAllowNew)
     {
         if (!fAllowNew)
             return false;
-
-        // Genesis Block:
-        // CBlock(hash=000000000019d6, ver=1, hashPrevBlock=00000000000000, hashMerkleRoot=4a5e1e, nTime=1231006505, nBits=1d00ffff, nNonce=2083236893, vtx=1)
-        //   CTransaction(hash=4a5e1e, ver=1, vin.size=1, vout.size=1, nLockTime=0)
-        //     CTxIn(COutPoint(000000, -1), coinbase 04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73)
-        //     CTxOut(nValue=50.00000000, scriptPubKey=0x5F1DF16B2B704C8A578D0B)
-        //   vMerkleTree: 4a5e1e
-
+    
+	// Genesis block:
+	// block.nTime = 1366559428 
+	// block.nNonce = 2085386442 
+	// block.GetHash = 384b060671f4a93948e9c168216dadb0ca2fbc54aa11c86b0345b6af1c59b2f5
+	// CBlock(hash=384b060671f4a93948e9, PoW=00000951e146b0026411, ver=1,
+	//  hashPrevBlock=00000000000000000000, hashMerkleRoot=5a2e19825b,
+	//  nTime=1366559428, nBits=1e0ffff0, nNonce=2085386442, vtx=1)
+	// CTransaction(hash=5a2e19825b, ver=1, vin.size=1, vout.size=1, nLockTime=0)
+	// CTxIn(COutPoint(0000000000, -1), coinbase 04ffff001d010441746f646f3a207265706c616365207769746820736f6d657468696e67207468617420656e7375726573206e6f207072656d696e696e6720746f6f6b20706c616365)
+	// CTxOut(error)
+	// vMerkleTree: 5a2e19825b
+        
         // Genesis block
-        const char* pszTimestamp = "Telegraph 27/Jun/2012 Barclays hit with \xc2\xa3""290m fine over Libor fixing";
+        const char* pszTimestamp = "Traditionally one puts something timely here coinciding with the epoch";
         CTransaction txNew;
-        txNew.nVersion = 2;
-        txNew.nRefHeight = 0;
-        txNew.vin .resize(1);
-        txNew.vout.resize(8);
-        txNew.vin[0].scriptSig = CScript()
-            << 486604799
-            << CBigNum(4)
-            << vector<unsigned char>(
-                   (const unsigned char*)pszTimestamp,
-                   (const unsigned char*)pszTimestamp + strlen(pszTimestamp));
-        txNew.vout[0].SetInitialValue(25453671561LL);
-        txNew.vout[0].scriptPubKey = CScript()
-            << ParseHex("04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f")
-            << OP_CHECKSIG;
-        txNew.vout[1].SetInitialValue(1LL);
-        txNew.vout[1].scriptPubKey = CScript()
-            << uint256("0x000000000000042d1bc432a92c42c186297799da1a7b878d79edc5e080d12950")
-            << OP_DROP
-            << OP_FALSE;
-        const char* pszMessage2 = "\
-Metals were an implicitly abusive agreement.\n\
-Modern \"paper\" is a flawed tool, its engineering is a nest of leeches.\n\
-The old money is obsolete.\n\
-Let the individual monetize its credit without cartel intermediaries.\n\
-Give us a rent-less cash so we can be free for the first time.\n\
-Let this be the awaited dawn.";
-        txNew.vout[2].SetInitialValue(1LL);
-        txNew.vout[2].scriptPubKey = CScript()
-            << ParseHex("202020")
-            << OP_DROP
-            << vector<unsigned char>(
-                   (const unsigned char*)pszMessage2,
-                   (const unsigned char*)pszMessage2 + strlen(pszMessage2))
-            << OP_DROP
-            << OP_DUP
-            << OP_HASH160
-            << ParseHex("0ef0f9d19a653023554146a866238b8822bc84df")
-            << OP_EQUALVERIFY
-            << OP_CHECKSIG;
-        const char* pszMessage3 = "\
-\"Let us calculate, without further ado, in order to see who is right.\" --Gottfried Wilhelm Leibniz\n\
-\xce\xbe\xc2\xb4\xef\xbd\xa5\xe2\x88\x80\xef\xbd\xa5`\xef\xbc\x89\xe3\x80\x80\xe3\x80\x80\xe3\x80\x80\xe3\x80\x80  n\n\
-\xef\xbf\xa3\xe3\x80\x80\xe3\x80\x80\xe3\x80\x80  \xef\xbc\xbc\xe3\x80\x80\xe3\x80\x80  \xef\xbc\x88 E\xef\xbc\x89 good job, maaku!\n\
-\xef\xbe\x8c\xe3\x80\x80\xe3\x80\x80\xe3\x80\x80  /\xe3\x83\xbd \xe3\x83\xbd_\xef\xbc\x8f\xef\xbc\x8f";
-        txNew.vout[3].SetInitialValue(1LL);
-        txNew.vout[3].scriptPubKey = CScript()
-            << ParseHex("2020202020202020")
-            << OP_DROP
-            << vector<unsigned char>(
-                   (const unsigned char*)pszMessage3,
-                   (const unsigned char*)pszMessage3 + strlen(pszMessage3))
-            << OP_DROP
-            << OP_DUP
-            << OP_HASH160
-            << ParseHex("c26be5ec809aa4bf6b30aa89823cff7cedc3679a")
-            << OP_EQUALVERIFY
-            << OP_CHECKSIG;
-        const char* pszMessage4 = "Ich w\xc3\xbc""nsche Freicoin viel Erfolg zum Nutzen der 99 Prozent!";
-        txNew.vout[4].SetInitialValue(1LL);
-        txNew.vout[4].scriptPubKey = CScript()
-            << ParseHex("202020202020")
-            << OP_DROP
-            << vector<unsigned char>(
-                   (const unsigned char*)pszMessage4,
-                   (const unsigned char*)pszMessage4 + strlen(pszMessage4))
-            << OP_DROP
-            << OP_DUP
-            << OP_HASH160
-            << ParseHex("2939acd60037281a708eb11e4e9eda452c029eca")
-            << OP_EQUALVERIFY
-            << OP_CHECKSIG;
-        const char* pszMessage5 = "\"The value of a man should be seen in what he gives and not in what he is able to receive.\" --Albert Einstein";
-        txNew.vout[5].SetInitialValue(1LL);
-        txNew.vout[5].scriptPubKey = CScript()
-            << ParseHex("20202020202020202020202020")
-            << OP_DROP
-            << vector<unsigned char>(
-                   (const unsigned char*)pszMessage5,
-                   (const unsigned char*)pszMessage5 + strlen(pszMessage5))
-            << OP_DROP
-            << OP_DUP
-            << OP_HASH160
-            << ParseHex("f9ca5caab4bda4dc28b5556aa79a2eec0447f0bf")
-            << OP_EQUALVERIFY
-            << OP_CHECKSIG;
-        const char* pszMessage6 = "\"An army of principles can penetrate where an army of soldiers cannot.\" --Thomas Paine";
-        txNew.vout[6].SetInitialValue(1LL);
-        txNew.vout[6].scriptPubKey = CScript()
-            << ParseHex("202020202020202020202020")
-            << OP_DROP
-            << vector<unsigned char>(
-                   (const unsigned char*)pszMessage6,
-                   (const unsigned char*)pszMessage6 + strlen(pszMessage6))
-            << OP_DROP
-            << OP_DUP
-            << OP_HASH160
-            << ParseHex("08f320cbb41a1ae25b794f6175f96080681989f3")
-            << OP_EQUALVERIFY
-            << OP_CHECKSIG;
-        txNew.vout[7].SetInitialValue(49603174604LL);
-        txNew.vout[7].scriptPubKey = CScript()
-            << OP_DUP
-            << OP_HASH160
-            << ParseHex("85e54144c4020a65fa0a8fdbac8bba75dbc2fd00")
-            << OP_EQUALVERIFY
-            << OP_CHECKSIG;
+        txNew.vin.resize(1);
+        txNew.vout.resize(1);
+        txNew.vin[0].scriptSig = CScript() << 486604799 << CBigNum(4) << vector<unsigned char>((const unsigned char*)pszTimestamp, (const unsigned char*)pszTimestamp + strlen(pszTimestamp));
+        txNew.vout[0].nValue = 0;
+        txNew.vout[0].scriptPubKey = CScript() << 0x0 << OP_CHECKSIG; // a privkey for that 'vanity' pubkey would be interesting ;)
         CBlock block;
         block.vtx.push_back(txNew);
-        block.hashPrevBlock  = 0;
+        block.hashPrevBlock = 0;
         block.hashMerkleRoot = block.BuildMerkleTree();
         block.nVersion = 1;
-        block.nTime    = 1356123600;
-        block.nBits    = 0x1d00ffff;
-        block.nNonce   =  278229610;
+        block.nTime    = 1404935837;
+        block.nBits    = 0x1e0ffff0;
+        block.nNonce   = 2085386442;
 
         if (fTestNet)
         {
-            block.nTime    = 1356123600;
-            block.nNonce   = 3098244593;
+            block.nTime    = 1404935837;
+            block.nNonce   = 386402991;
         }
 
         //// debug print
         printf("%s\n", block.GetHash().ToString().c_str());
         printf("%s\n", hashGenesisBlock.ToString().c_str());
         printf("%s\n", block.hashMerkleRoot.ToString().c_str());
-        assert(block.hashMerkleRoot == uint256("0xf53b1baa971ea40be88cf51288aabd700dfec96c486bf7155a53a4919af4c8bd"));
+        assert(block.hashMerkleRoot == uint256("0x5a2e19825b4162f68602039040f1e05d9f924ff00a3aff7327ca6abd6f3279bc"));
+
+        // If genesis block hash does not match, then generate new genesis hash.
+        if (false && block.GetHash() != hashGenesisBlock)
+        {
+            printf("Searching for genesis block...\n");
+            // This will figure out a valid hash and Nonce if you're
+            // creating a different genesis block:
+            uint256 hashTarget = CBigNum().SetCompact(block.nBits).getuint256();
+            uint256 thash;
+            char scratchpad[SCRYPT_SCRATCHPAD_SIZE];
+
+            loop
+            {
+                scrypt_1024_1_1_256_sp(BEGIN(block.nVersion), BEGIN(thash), scratchpad);
+                if (thash <= hashTarget)
+                    break;
+                if ((block.nNonce & 0xFFF) == 0)
+                {
+                    printf("nonce %08X: hash = %s (target = %s)\n", block.nNonce, thash.ToString().c_str(), hashTarget.ToString().c_str());
+                }
+                ++block.nNonce;
+                if (block.nNonce == 0)
+                {
+                    printf("NONCE WRAPPED, incrementing time\n");
+                    ++block.nTime;
+                }
+            }
+            printf("block.nTime = %u \n", block.nTime);
+            printf("block.nNonce = %u \n", block.nNonce);
+            printf("block.GetHash = %s\n", block.GetHash().ToString().c_str());
+        }
+
         block.print();
         assert(block.GetHash() == hashGenesisBlock);
 
@@ -2895,7 +2097,7 @@ Let this be the awaited dawn.";
 
 void PrintBlockTree()
 {
-    // pre-compute tree structure
+    // precompute tree structure
     map<CBlockIndex*, vector<CBlockIndex*> > mapNext;
     for (map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.begin(); mi != mapBlockIndex.end(); ++mi)
     {
@@ -2938,7 +2140,7 @@ void PrintBlockTree()
         // print item
         CBlock block;
         block.ReadFromDisk(pindex);
-        printf("%d (%u,%u) %s  %s  tx %"PRIszu"",
+        printf("%d (%u,%u) %s  %s  tx %d",
             pindex->nHeight,
             pindex->nFile,
             pindex->nBlockPos,
@@ -2948,7 +2150,7 @@ void PrintBlockTree()
 
         PrintWallets(block);
 
-        // put the main time-chain first
+        // put the main timechain first
         vector<CBlockIndex*>& vNext = mapNext[pindex];
         for (unsigned int i = 0; i < vNext.size(); i++)
         {
@@ -2967,8 +2169,6 @@ void PrintBlockTree()
 
 bool LoadExternalBlockFile(FILE* fileIn)
 {
-    int64 nStart = GetTimeMillis();
-
     int nLoaded = 0;
     {
         LOCK(cs_main);
@@ -3021,7 +2221,7 @@ bool LoadExternalBlockFile(FILE* fileIn)
                    __PRETTY_FUNCTION__);
         }
     }
-    printf("Loaded %i blocks from external file in %"PRI64d"ms\n", nLoaded, GetTimeMillis() - nStart);
+    printf("Loaded %i blocks from external file\n", nLoaded);
     return nLoaded > 0;
 }
 
@@ -3038,8 +2238,8 @@ bool LoadExternalBlockFile(FILE* fileIn)
 // CAlert
 //
 
-extern map<uint256, CAlert> mapAlerts;
-extern CCriticalSection cs_mapAlerts;
+map<uint256, CAlert> mapAlerts;
+CCriticalSection cs_mapAlerts;
 
 string GetWarnings(string strFor)
 {
@@ -3060,7 +2260,7 @@ string GetWarnings(string strFor)
     if (pindexBest && bnBestInvalidWork > bnBestChainWork + pindexBest->GetBlockWork() * 6)
     {
         nPriority = 2000;
-        strStatusBar = strRPC = _("Warning: Displayed transactions may not be correct! You may need to upgrade, or other nodes may need to upgrade.");
+        strStatusBar = strRPC = "WARNING: Displayed transactions may not be correct!  You may need to upgrade, or other nodes may need to upgrade.";
     }
 
     // Alerts
@@ -3083,6 +2283,69 @@ string GetWarnings(string strFor)
         return strRPC;
     assert(!"GetWarnings() : invalid parameter");
     return "error";
+}
+
+CAlert CAlert::getAlertByHash(const uint256 &hash)
+{
+    CAlert retval;
+    {
+        LOCK(cs_mapAlerts);
+        map<uint256, CAlert>::iterator mi = mapAlerts.find(hash);
+        if(mi != mapAlerts.end())
+            retval = mi->second;
+    }
+    return retval;
+}
+
+bool CAlert::ProcessAlert()
+{
+    if (!CheckSignature())
+        return false;
+    if (!IsInEffect())
+        return false;
+
+    {
+        LOCK(cs_mapAlerts);
+        // Cancel previous alerts
+        for (map<uint256, CAlert>::iterator mi = mapAlerts.begin(); mi != mapAlerts.end();)
+        {
+            const CAlert& alert = (*mi).second;
+            if (Cancels(alert))
+            {
+                printf("cancelling alert %d\n", alert.nID);
+                uiInterface.NotifyAlertChanged((*mi).first, CT_DELETED);
+                mapAlerts.erase(mi++);
+            }
+            else if (!alert.IsInEffect())
+            {
+                printf("expiring alert %d\n", alert.nID);
+                uiInterface.NotifyAlertChanged((*mi).first, CT_DELETED);
+                mapAlerts.erase(mi++);
+            }
+            else
+                mi++;
+        }
+
+        // Check if this alert has been cancelled
+        BOOST_FOREACH(PAIRTYPE(const uint256, CAlert)& item, mapAlerts)
+        {
+            const CAlert& alert = item.second;
+            if (alert.Cancels(*this))
+            {
+                printf("alert already cancelled by %d\n", alert.nID);
+                return false;
+            }
+        }
+
+        // Add to mapAlerts
+        mapAlerts.insert(make_pair(GetHash(), *this));
+        // Notify UI if it applies to me
+        if(AppliesToMe())
+            uiInterface.NotifyAlertChanged(GetHash(), CT_NEW);
+    }
+
+    printf("accepted alert %d, AppliesToMe()=%d\n", nID, AppliesToMe());
+    return true;
 }
 
 
@@ -3126,9 +2389,9 @@ bool static AlreadyHave(CTxDB& txdb, const CInv& inv)
 
 
 // The message start string is designed to be unlikely to occur in normal data.
-// The characters are rarely used upper ASCII, not valid as UTF-8, and produce
+// The characters are rarely used upper ascii, not valid as UTF-8, and produce
 // a large 4-byte int at any alignment.
-unsigned char pchMessageStart[4] = { 0x2c, 0xfe, 0x7e, 0x6d };
+unsigned char pchMessageStart[4] = { 0xfc, 0xd9, 0xb7, 0xdd };
 
 
 bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
@@ -3136,7 +2399,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
     static map<CService, CPubKey> mapReuseKey;
     RandAddSeedPerfmon();
     if (fDebug)
-        printf("received: %s (%"PRIszu" bytes)\n", strCommand.c_str(), vRecv.size());
+        printf("received: %s (%d bytes)\n", strCommand.c_str(), vRecv.size());
     if (mapArgs.count("-dropmessagestest") && GetRand(atoi(mapArgs["-dropmessagestest"])) == 0)
     {
         printf("dropmessagestest DROPPING RECV MESSAGE\n");
@@ -3233,7 +2496,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         // Ask the first connected node for block updates
         static int nAskedForBlocks = 0;
         if (!pfrom->fClient && !pfrom->fOneShot &&
-            (pfrom->nStartingHeight > (nBestHeight - 144)) &&
             (pfrom->nVersion < NOBLKS_VERSION_START ||
              pfrom->nVersion >= NOBLKS_VERSION_END) &&
              (nAskedForBlocks < 1 || vNodes.size() <= 1))
@@ -3282,7 +2544,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         if (vAddr.size() > 1000)
         {
             pfrom->Misbehaving(20);
-            return error("message addr size() = %"PRIszu"", vAddr.size());
+            return error("message addr size() = %d", vAddr.size());
         }
 
         // Store the new addresses
@@ -3342,10 +2604,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
     {
         vector<CInv> vInv;
         vRecv >> vInv;
-        if (vInv.size() > MAX_INV_SZ)
+        if (vInv.size() > 50000)
         {
             pfrom->Misbehaving(20);
-            return error("message inv size() = %"PRIszu"", vInv.size());
+            return error("message inv size() = %d", vInv.size());
         }
 
         // find last block in inv vector
@@ -3377,6 +2639,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
                 // In case we are on a very long side-chain, it is possible that we already have
                 // the last block in an inv bundle sent in response to getblocks. Try to detect
                 // this situation and push another getblocks to continue.
+                std::vector<CInv> vGetData(1,inv);
                 pfrom->PushGetBlocks(mapBlockIndex[inv.hash], uint256(0));
                 if (fDebug)
                     printf("force request: %s\n", inv.ToString().c_str());
@@ -3392,14 +2655,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
     {
         vector<CInv> vInv;
         vRecv >> vInv;
-        if (vInv.size() > MAX_INV_SZ)
+        if (vInv.size() > 50000)
         {
             pfrom->Misbehaving(20);
-            return error("message getdata size() = %"PRIszu"", vInv.size());
+            return error("message getdata size() = %d", vInv.size());
         }
 
         if (fDebugNet || (vInv.size() != 1))
-            printf("received getdata (%"PRIszu" invsz)\n", vInv.size());
+            printf("received getdata (%d invsz)\n", vInv.size());
 
         BOOST_FOREACH(const CInv& inv, vInv)
         {
@@ -3434,24 +2697,11 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
             else if (inv.IsKnownType())
             {
                 // Send stream from relay memory
-                bool pushed = false;
                 {
                     LOCK(cs_mapRelay);
                     map<CInv, CDataStream>::iterator mi = mapRelay.find(inv);
-                    if (mi != mapRelay.end()) {
+                    if (mi != mapRelay.end())
                         pfrom->PushMessage(inv.GetCommand(), (*mi).second);
-                        pushed = true;
-                    }
-                }
-                if (!pushed && inv.type == MSG_TX) {
-                    LOCK(mempool.cs);
-                    if (mempool.exists(inv.hash)) {
-                        CTransaction tx = mempool.lookup(inv.hash);
-                        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-                        ss.reserve(1000);
-                        ss << tx;
-                        pfrom->PushMessage("tx", ss);
-                    }
                 }
             }
 
@@ -3626,22 +2876,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
     }
 
 
-    else if (strCommand == "mempool")
-    {
-        std::vector<uint256> vtxid;
-        mempool.queryHashes(vtxid);
-        vector<CInv> vInv;
-        for (unsigned int i = 0; i < vtxid.size(); i++) {
-            CInv inv(MSG_TX, vtxid[i]);
-            vInv.push_back(inv);
-            if (i == (MAX_INV_SZ - 1))
-                    break;
-        }
-        if (vInv.size() > 0)
-            pfrom->PushMessage("inv", vInv);
-    }
-
-
     else if (strCommand == "checkorder")
     {
         uint256 hashReply;
@@ -3716,27 +2950,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         CAlert alert;
         vRecv >> alert;
 
-        uint256 alertHash = alert.GetHash();
-        if (pfrom->setKnown.count(alertHash) == 0)
+        if (alert.ProcessAlert())
         {
-            if (alert.ProcessAlert())
+            // Relay
+            pfrom->setKnown.insert(alert.GetHash());
             {
-                // Relay
-                pfrom->setKnown.insert(alertHash);
-                {
-                    LOCK(cs_vNodes);
-                    BOOST_FOREACH(CNode* pnode, vNodes)
-                        alert.RelayTo(pnode);
-                }
-            }
-            else {
-                // Small DoS penalty so peers that send us lots of
-                // duplicate/expired/invalid-signature/whatever alerts
-                // eventually get banned.
-                // This isn't a Misbehaving(100) (immediate ban) because the
-                // peer might be an older or different implementation with
-                // a different signature key, etc.
-                pfrom->Misbehaving(10);
+                LOCK(cs_vNodes);
+                BOOST_FOREACH(CNode* pnode, vNodes)
+                    alert.RelayTo(pnode);
             }
         }
     }
@@ -3793,7 +3014,7 @@ bool ProcessMessages(CNode* pfrom)
             break;
         }
         if (pstart - vRecv.begin() > 0)
-            printf("\n\nPROCESSMESSAGE SKIPPED %"PRIpdd" BYTES\n\n", pstart - vRecv.begin());
+            printf("\n\nPROCESSMESSAGE SKIPPED %d BYTES\n\n", pstart - vRecv.begin());
         vRecv.erase(vRecv.begin(), pstart);
 
         // Read header
@@ -3851,12 +3072,12 @@ bool ProcessMessages(CNode* pfrom)
         {
             if (strstr(e.what(), "end of data"))
             {
-                // Allow exceptions from under-length message on vRecv
+                // Allow exceptions from underlength message on vRecv
                 printf("ProcessMessages(%s, %u bytes) : Exception '%s' caught, normally caused by a message being shorter than its stated length\n", strCommand.c_str(), nMessageSize, e.what());
             }
             else if (strstr(e.what(), "size too large"))
             {
-                // Allow exceptions from over-long size
+                // Allow exceptions from overlong size
                 printf("ProcessMessages(%s, %u bytes) : Exception '%s' caught\n", strCommand.c_str(), nMessageSize, e.what());
             }
             else
@@ -4054,7 +3275,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
 
 //////////////////////////////////////////////////////////////////////////////
 //
-// FreicoinMiner
+// BitcoinMiner
 //
 
 int static FormatHashBlocks(void* pbuffer, unsigned int len)
@@ -4105,9 +3326,9 @@ unsigned int static ScanHash_CryptoPP(char* pmidstate, char* pdata, char* phash1
     unsigned int& nNonce = *(unsigned int*)(pdata + 12);
     for (;;)
     {
-        // Crypto++ SHA256
+        // Crypto++ SHA-256
         // Hash pdata using pmidstate as the starting state into
-        // pre-formatted buffer phash1, then hash phash1 into phash
+        // preformatted buffer phash1, then hash phash1 into phash
         nNonce++;
         SHA256Transform(phash1, pdata, pmidstate);
         SHA256Transform(phash, phash1, pSHA256InitState);
@@ -4133,18 +3354,16 @@ public:
     CTransaction* ptx;
     set<uint256> setDependsOn;
     double dPriority;
-    double dFeePerKb;
 
     COrphan(CTransaction* ptxIn)
     {
         ptx = ptxIn;
-        dPriority = dFeePerKb = 0;
+        dPriority = 0;
     }
 
     void print() const
     {
-        printf("COrphan(hash=%s, dPriority=%.1f, dFeePerKb=%.1f)\n",
-               ptx->GetHash().ToString().substr(0,10).c_str(), dPriority, dFeePerKb);
+        printf("COrphan(hash=%s, dPriority=%.1f)\n", ptx->GetHash().ToString().substr(0,10).c_str(), dPriority);
         BOOST_FOREACH(uint256 hash, setDependsOn)
             printf("   setDependsOn %s\n", hash.ToString().substr(0,10).c_str());
     }
@@ -4154,115 +3373,35 @@ public:
 uint64 nLastBlockTx = 0;
 uint64 nLastBlockSize = 0;
 
-// We want to sort transactions by priority and fee, so:
-typedef boost::tuple<double, double, CTransaction*> TxPriority;
-class TxPriorityCompare
-{
-    bool byFee;
-public:
-    TxPriorityCompare(bool _byFee) : byFee(_byFee) { }
-    bool operator()(const TxPriority& a, const TxPriority& b)
-    {
-        if (byFee)
-        {
-            if (a.get<1>() == b.get<1>())
-                return a.get<0>() < b.get<0>();
-            return a.get<1>() < b.get<1>();
-        }
-        else
-        {
-            if (a.get<0>() == b.get<0>())
-                return a.get<1>() < b.get<1>();
-            return a.get<0>() < b.get<0>();
-        }
-    }
-};
-
 CBlock* CreateNewBlock(CReserveKey& reservekey)
 {
+    CBlockIndex* pindexPrev = pindexBest;
+
     // Create new block
     auto_ptr<CBlock> pblock(new CBlock());
     if (!pblock.get())
         return NULL;
 
+    // Create coinbase tx
+    CTransaction txNew;
+    txNew.vin.resize(1);
+    txNew.vin[0].prevout.SetNull();
+    txNew.vout.resize(1);
+    txNew.vout[0].scriptPubKey << reservekey.GetReservedKey() << OP_CHECKSIG;
+
+    // Add our coinbase tx as first transaction
+    pblock->vtx.push_back(txNew);
+
+    // Collect memory pool transactions into the block
+    int64 nFees = 0;
     {
         LOCK2(cs_main, mempool.cs);
-        CBlockIndex* pindexPrev = pindexBest;
-
-        int nHeight = pindexPrev->nHeight + 1;
-
-        std::map<CTxDestination, mpq> mapBudget;
-
-        mpq nIDAmount = GetInitialDistributionAmount(nHeight);
-        CBudget budgetID = GetInitialDistributionBudget(nHeight);
-        ApplyBudget(nIDAmount, budgetID, mapBudget);
-
-        mpq nPSAmount = GetPerpetualSubsidyAmount(nHeight);
-        CBudget budgetPS = GetPerpetualSubsidyBudget(nHeight);
-        ApplyBudget(nPSAmount, budgetPS, mapBudget);
-
-        // To make sure that no transaction fee budgetary entries are dropped due
-        // to truncation, we assume the largest theoretically possible transaction
-        // fee, MAX_MONEY. Once the transactions for the new block have been
-        // selected, we will go back and recreate the budget based on the actual
-        // transaction fees.
-        CBudget budgetTF = GetTransactionFeeBudget(nHeight);
-        ApplyBudget(MPQ_MAX_MONEY, budgetTF, mapBudget);
-
-        // Create coinbase tx
-        CTransaction txNew;
-        txNew.vin.resize(1);
-        txNew.vin[0].prevout.SetNull();
-        txNew.vout.resize(1+mapBudget.size());
-        txNew.vout[0].scriptPubKey << reservekey.GetReservedKey() << OP_CHECKSIG;
-        {
-            std::map<CTxDestination, mpq>::iterator itr; int idx;
-            for (itr = mapBudget.begin(), idx=1; itr != mapBudget.end(); ++itr, ++idx) {
-                txNew.vout[idx].scriptPubKey.SetDestination(itr->first);
-                txNew.vout[idx].SetInitialValue(RoundAbsolute(itr->second, ROUND_AWAY_FROM_ZERO));
-            }
-        }
-        txNew.nRefHeight = nHeight;
-
-        // Add our coinbase tx as first transaction
-        pblock->vtx.push_back(txNew);
-
-        // Largest block you're willing to create:
-        unsigned int nBlockMaxSize = GetArg("-blockmaxsize", MAX_BLOCK_SIZE_GEN/2);
-        // Limit to betweeen 1K and MAX_BLOCK_SIZE-1K for sanity:
-        nBlockMaxSize = std::max((unsigned int)1000, std::min((unsigned int)(MAX_BLOCK_SIZE-1000), nBlockMaxSize));
-
-        // How much of the block should be dedicated to high-priority transactions,
-        // included regardless of the fees they pay
-        unsigned int nBlockPrioritySize = GetArg("-blockprioritysize", 27000);
-        nBlockPrioritySize = std::min(nBlockMaxSize, nBlockPrioritySize);
-
-        // Minimum block size you want to create; block will be filled with free transactions
-        // until there are no more or the block reaches this size:
-        unsigned int nBlockMinSize = GetArg("-blockminsize", 0);
-        nBlockMinSize = std::min(nBlockMaxSize, nBlockMinSize);
-
-        // Fee-per-kilobyte amount considered the same as "free"
-        // Be careful setting this: if you set it to zero then
-        // a transaction spammer can cheaply fill blocks using
-        // 1-satoshi-fee transactions. It should be set above the real
-        // cost to you of processing a transaction.
-        mpq nMinTxFee = MIN_TX_FEE;
-        if (mapArgs.count("-mintxfee"))
-            ParseMoney(mapArgs["-mintxfee"], nMinTxFee);
-
-        // Collect memory pool transactions into the block
-        mpq nFees = 0;
-
         CTxDB txdb("r");
 
         // Priority order to process transactions
         list<COrphan> vOrphan; // list memory doesn't move
         map<uint256, vector<COrphan*> > mapDependers;
-
-        // This vector will be sorted into a priority queue:
-        vector<TxPriority> vecPriority;
-        vecPriority.reserve(mempool.mapTx.size());
+        multimap<double, CTransaction*> mapPriority;
         for (map<uint256, CTransaction>::iterator mi = mempool.mapTx.begin(); mi != mempool.mapTx.end(); ++mi)
         {
             CTransaction& tx = (*mi).second;
@@ -4271,8 +3410,6 @@ CBlock* CreateNewBlock(CReserveKey& reservekey)
 
             COrphan* porphan = NULL;
             double dPriority = 0;
-            mpq nTotalIn = 0;
-            bool fMissingInputs = false;
             BOOST_FOREACH(const CTxIn& txin, tx.vin)
             {
                 // Read prev transaction
@@ -4280,19 +3417,6 @@ CBlock* CreateNewBlock(CReserveKey& reservekey)
                 CTxIndex txindex;
                 if (!txPrev.ReadFromDisk(txdb, txin.prevout, txindex))
                 {
-                    // This should never happen; all transactions in the memory
-                    // pool should connect to either transactions in the chain
-                    // or other transactions in the memory pool.
-                    if (!mempool.mapTx.count(txin.prevout.hash))
-                    {
-                        printf("ERROR: mempool transaction missing input\n");
-                        if (fDebug) assert("mempool transaction missing input" == 0);
-                        fMissingInputs = true;
-                        if (porphan)
-                            vOrphan.pop_back();
-                        break;
-                    }
-
                     // Has to wait for dependencies
                     if (!porphan)
                     {
@@ -4302,37 +3426,34 @@ CBlock* CreateNewBlock(CReserveKey& reservekey)
                     }
                     mapDependers[txin.prevout.hash].push_back(porphan);
                     porphan->setDependsOn.insert(txin.prevout.hash);
-                    const CTransaction &txPrevIn = mempool.mapTx[txin.prevout.hash];
-                    nTotalIn += GetPresentValue(txPrevIn, txPrevIn.vout[txin.prevout.n], tx.nRefHeight);
                     continue;
                 }
+                int64 nValueIn = txPrev.vout[txin.prevout.n].nValue;
 
+                // Read block header
                 int nConf = txindex.GetDepthInMainChain();
 
-                mpq nValueIn = GetPresentValue(txPrev, txPrev.vout[txin.prevout.n], tx.nRefHeight);
-                nTotalIn += nValueIn;
+                dPriority += (double)nValueIn * nConf;
 
-                dPriority += nTotalIn.get_d() * nConf;
+                if (fDebug && GetBoolArg("-printpriority"))
+                    printf("priority     nValueIn=%-12"PRI64d" nConf=%-5d dPriority=%-20.1f\n", nValueIn, nConf, dPriority);
             }
-            if (fMissingInputs) continue;
 
             // Priority is sum(valuein * age) / txsize
-            unsigned int nTxSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
-            dPriority /= nTxSize;
-
-            // This is a more accurate fee-per-kilobyte than is used by the client code, because the
-            // client code rounds up the size to the nearest 1K. That's good, because it gives an
-            // incentive to create smaller transactions.
-            mpq txValueOut = nTotalIn - tx.GetValueOut();
-            double dFeePerKb = txValueOut.get_d() / (double(nTxSize)/1000.0);
+            dPriority /= ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
 
             if (porphan)
-            {
                 porphan->dPriority = dPriority;
-                porphan->dFeePerKb = dFeePerKb;
-            }
             else
-                vecPriority.push_back(TxPriority(dPriority, dFeePerKb, &(*mi).second));
+                mapPriority.insert(make_pair(-dPriority, &(*mi).second));
+
+            if (fDebug && GetBoolArg("-printpriority"))
+            {
+                printf("priority %-20.1f %s\n%s", dPriority, tx.GetHash().ToString().substr(0,10).c_str(), tx.ToString().c_str());
+                if (porphan)
+                    porphan->print();
+                printf("\n");
+            }
         }
 
         // Collect transactions into block
@@ -4340,28 +3461,16 @@ CBlock* CreateNewBlock(CReserveKey& reservekey)
         uint64 nBlockSize = 1000;
         uint64 nBlockTx = 0;
         int nBlockSigOps = 100;
-        bool fSortedByFee = (nBlockPrioritySize <= 0);
-
-        TxPriorityCompare comparer(fSortedByFee);
-        std::make_heap(vecPriority.begin(), vecPriority.end(), comparer);
-
-        while (!vecPriority.empty())
+        while (!mapPriority.empty())
         {
-            // Take highest priority transaction off the priority queue:
-            double dPriority = vecPriority.front().get<0>();
-            double dFeePerKb = vecPriority.front().get<1>();
-            CTransaction& tx = *(vecPriority.front().get<2>());
-
-            std::pop_heap(vecPriority.begin(), vecPriority.end(), comparer);
-            vecPriority.pop_back();
-
-            // Invalid height
-            if ( tx.nRefHeight > nHeight )
-                continue;
+            // Take highest priority transaction off priority queue
+            double dPriority = -(*mapPriority.begin()).first;
+            CTransaction& tx = *(*mapPriority.begin()).second;
+            mapPriority.erase(mapPriority.begin());
 
             // Size limits
             unsigned int nTxSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
-            if (nBlockSize + nTxSize >= nBlockMaxSize)
+            if (nBlockSize + nTxSize >= MAX_BLOCK_SIZE_GEN)
                 continue;
 
             // Legacy limits on sigOps:
@@ -4369,19 +3478,10 @@ CBlock* CreateNewBlock(CReserveKey& reservekey)
             if (nBlockSigOps + nTxSigOps >= MAX_BLOCK_SIGOPS)
                 continue;
 
-            // Skip free transactions if we're past the minimum block size:
-            if (fSortedByFee && (dFeePerKb < nMinTxFee) && (nBlockSize + nTxSize >= nBlockMinSize))
-                continue;
-
-            // Prioritize by fee once past the priority size or we run out of high-priority
-            // transactions:
-            if (!fSortedByFee &&
-                ((nBlockSize + nTxSize >= nBlockPrioritySize) || (dPriority < COIN * 144 / 250)))
-            {
-                fSortedByFee = true;
-                comparer = TxPriorityCompare(fSortedByFee);
-                std::make_heap(vecPriority.begin(), vecPriority.end(), comparer);
-            }
+            // Transaction fee required depends on block size
+            // Fabcoind: Reduce the exempted free transactions to 500 bytes (from Bitcoin's 3000 bytes)
+            bool fAllowFree = (nBlockSize + nTxSize < 1500 || CTransaction::AllowFree(dPriority));
+            int64 nMinFee = tx.GetMinFee(nBlockSize, fAllowFree, GMF_BLOCK);
 
             // Connecting shouldn't fail due to dependency on other memory pool transactions
             // because we're already processing them in order of dependency
@@ -4391,8 +3491,9 @@ CBlock* CreateNewBlock(CReserveKey& reservekey)
             if (!tx.FetchInputs(txdb, mapTestPoolTmp, false, true, mapInputs, fInvalid))
                 continue;
 
-            mpq nNet = tx.GetValueIn(mapInputs) - tx.GetValueOut();
-            mpq nTxFees = GetTimeAdjustedValue(nNet, nHeight-tx.nRefHeight);
+            int64 nTxFees = tx.GetValueIn(mapInputs)-tx.GetValueOut();
+            if (nTxFees < nMinFee)
+                continue;
 
             nTxSigOps += tx.GetP2SHSigOpCount(mapInputs);
             if (nBlockSigOps + nTxSigOps >= MAX_BLOCK_SIGOPS)
@@ -4410,12 +3511,6 @@ CBlock* CreateNewBlock(CReserveKey& reservekey)
             nBlockSigOps += nTxSigOps;
             nFees += nTxFees;
 
-            if (fDebug && GetBoolArg("-printpriority"))
-            {
-                printf("priority %.1f feeperkb %.1f txid %s\n",
-                       dPriority, dFeePerKb, tx.GetHash().ToString().c_str());
-            }
-
             // Add transactions that depend on this one to the priority queue
             uint256 hash = tx.GetHash();
             if (mapDependers.count(hash))
@@ -4426,51 +3521,25 @@ CBlock* CreateNewBlock(CReserveKey& reservekey)
                     {
                         porphan->setDependsOn.erase(hash);
                         if (porphan->setDependsOn.empty())
-                        {
-                            vecPriority.push_back(TxPriority(porphan->dPriority, porphan->dFeePerKb, porphan->ptx));
-                            std::push_heap(vecPriority.begin(), vecPriority.end(), comparer);
-                        }
+                            mapPriority.insert(make_pair(-porphan->dPriority, porphan->ptx));
                     }
                 }
             }
         }
 
-        mapBudget.clear();
-        ApplyBudget(nIDAmount, budgetID, mapBudget);
-        ApplyBudget(nPSAmount, budgetPS, mapBudget);
-        ApplyBudget(nFees, budgetTF, mapBudget);
-        pblock->vtx[0].vout.resize(1+mapBudget.size());
-        mpq nBudgetPaid = 0;
-        {
-            std::map<CTxDestination, mpq>::iterator itr; int idx;
-            for (itr = mapBudget.begin(), idx=1; itr != mapBudget.end(); ++itr, ++idx) {
-                txNew.vout[idx].scriptPubKey.SetDestination(itr->first);
-                mpq qActual = RoundAbsolute(itr->second, ROUND_AWAY_FROM_ZERO);
-                txNew.vout[idx].SetInitialValue(qActual);
-                nBudgetPaid += qActual;
-            }
-        }
-
         nLastBlockTx = nBlockTx;
         nLastBlockSize = nBlockSize;
-        printf("CreateNewBlock(): total size %"PRI64u"\n", nBlockSize);
+        printf("CreateNewBlock(): total size %lu\n", nBlockSize);
 
-        mpq nBlockReward = GetBlockValue(nHeight, nFees) - nBudgetPaid;
-        pblock->vtx[0].vout[0].SetInitialValue(RoundAbsolute(nBlockReward, ROUND_TOWARDS_ZERO));
-
-        // Fill in header
-        pblock->hashPrevBlock  = pindexPrev->GetBlockHash();
-        pblock->UpdateTime(pindexPrev);
-        pblock->nBits          = GetNextWorkRequired(pindexPrev, pblock.get());
-        pblock->nNonce         = 0;
-
-        pblock->vtx[0].vin[0].scriptSig = CScript() << OP_0 << OP_0;
-        CBlockIndex indexDummy(1, 1, *pblock);
-        indexDummy.pprev = pindexPrev;
-        indexDummy.nHeight = pindexPrev->nHeight + 1;
-        if (!pblock->ConnectBlock(txdb, &indexDummy, true))
-            throw std::runtime_error("CreateNewBlock() : ConnectBlock failed");
     }
+    pblock->vtx[0].vout[0].nValue = GetBlockValue(pindexPrev->nHeight+1, nFees);
+
+    // Fill in header
+    pblock->hashPrevBlock  = pindexPrev->GetBlockHash();
+    pblock->hashMerkleRoot = pblock->BuildMerkleTree();
+    pblock->UpdateTime(pindexPrev);
+    pblock->nBits          = GetNextWorkRequired(pindexPrev, pblock.get());
+    pblock->nNonce         = 0;
 
     return pblock.release();
 }
@@ -4486,8 +3555,7 @@ void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev, unsigned int& 
         hashPrevBlock = pblock->hashPrevBlock;
     }
     ++nExtraNonce;
-    unsigned int nHeight = pindexPrev->nHeight+1; // Height first in coinbase required for block.version=2
-    pblock->vtx[0].vin[0].scriptSig = (CScript() << nHeight << CBigNum(nExtraNonce)) + COINBASE_FLAGS;
+    pblock->vtx[0].vin[0].scriptSig = (CScript() << pblock->nTime << CBigNum(nExtraNonce)) + COINBASE_FLAGS;
     assert(pblock->vtx[0].vin[0].scriptSig.size() <= 100);
 
     pblock->hashMerkleRoot = pblock->BuildMerkleTree();
@@ -4497,7 +3565,7 @@ void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev, unsigned int& 
 void FormatHashBuffers(CBlock* pblock, char* pmidstate, char* pdata, char* phash1)
 {
     //
-    // Pre-build hash buffers
+    // Prebuild hash buffers
     //
     struct
     {
@@ -4542,23 +3610,23 @@ void FormatHashBuffers(CBlock* pblock, char* pmidstate, char* pdata, char* phash
 
 bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey)
 {
-    uint256 hash = pblock->GetHash();
+    uint256 hash = pblock->GetPoWHash();
     uint256 hashTarget = CBigNum().SetCompact(pblock->nBits).getuint256();
 
     if (hash > hashTarget)
         return false;
 
     //// debug print
-    printf("FreicoinMiner:\n");
+    printf("BitcoinMiner:\n");
     printf("proof-of-work found  \n  hash: %s  \ntarget: %s\n", hash.GetHex().c_str(), hashTarget.GetHex().c_str());
     pblock->print();
-    printf("generated %s\n", FormatMoney(pblock->vtx[0].GetValueOut()).c_str());
+    printf("generated %s\n", FormatMoney(pblock->vtx[0].vout[0].nValue).c_str());
 
     // Found a solution
     {
         LOCK(cs_main);
         if (pblock->hashPrevBlock != hashBestChain)
-            return error("FreicoinMiner : generated block is stale");
+            return error("BitcoinMiner : generated block is stale");
 
         // Remove key from key pool
         reservekey.KeepKey();
@@ -4571,31 +3639,31 @@ bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey)
 
         // Process this block the same as if we had received it from another node
         if (!ProcessBlock(NULL, pblock))
-            return error("FreicoinMiner : ProcessBlock, block not accepted");
+            return error("BitcoinMiner : ProcessBlock, block not accepted");
     }
 
     return true;
 }
 
-void static ThreadFreicoinMiner(void* parg);
+void static ThreadBitcoinMiner(void* parg);
 
-static bool fGenerateFreicoins = false;
+static bool fGenerateBitcoins = false;
 static bool fLimitProcessors = false;
 static int nLimitProcessors = -1;
 
-void static FreicoinMiner(CWallet *pwallet)
+void static BitcoinMiner(CWallet *pwallet)
 {
-    printf("FreicoinMiner started\n");
+    printf("BitcoinMiner started\n");
     SetThreadPriority(THREAD_PRIORITY_LOWEST);
 
     // Make this thread recognisable as the mining thread
-    RenameThread("freicoin-miner");
+    RenameThread("bitcoin-miner");
 
     // Each thread has its own key and counter
     CReserveKey reservekey(pwallet);
     unsigned int nExtraNonce = 0;
 
-    while (fGenerateFreicoins)
+    while (fGenerateBitcoins)
     {
         if (fShutdown)
             return;
@@ -4604,7 +3672,7 @@ void static FreicoinMiner(CWallet *pwallet)
             Sleep(1000);
             if (fShutdown)
                 return;
-            if (!fGenerateFreicoins)
+            if (!fGenerateBitcoins)
                 return;
         }
 
@@ -4620,12 +3688,11 @@ void static FreicoinMiner(CWallet *pwallet)
             return;
         IncrementExtraNonce(pblock.get(), pindexPrev, nExtraNonce);
 
-        printf("Running FreicoinMiner with %"PRIszu" transactions in block (%u bytes)\n", pblock->vtx.size(),
-               ::GetSerializeSize(*pblock, SER_NETWORK, PROTOCOL_VERSION));
+        printf("Running BitcoinMiner with %d transactions in block\n", pblock->vtx.size());
 
 
         //
-        // Pre-build hash buffers
+        // Prebuild hash buffers
         //
         char pmidstatebuf[32+16]; char* pmidstate = alignup<16>(pmidstatebuf);
         char pdatabuf[128+16];    char* pdata     = alignup<16>(pdatabuf);
@@ -4635,7 +3702,7 @@ void static FreicoinMiner(CWallet *pwallet)
 
         unsigned int& nBlockTime = *(unsigned int*)(pdata + 64 + 4);
         unsigned int& nBlockBits = *(unsigned int*)(pdata + 64 + 8);
-        unsigned int& nBlockNonce = *(unsigned int*)(pdata + 64 + 12);
+        //unsigned int& nBlockNonce = *(unsigned int*)(pdata + 64 + 12);
 
 
         //
@@ -4643,34 +3710,29 @@ void static FreicoinMiner(CWallet *pwallet)
         //
         int64 nStart = GetTime();
         uint256 hashTarget = CBigNum().SetCompact(pblock->nBits).getuint256();
-        uint256 hashbuf[2];
-        uint256& hash = *alignup<16>(hashbuf);
         loop
         {
             unsigned int nHashesDone = 0;
-            unsigned int nNonceFound;
+            //unsigned int nNonceFound;
 
-            // Crypto++ SHA256
-            nNonceFound = ScanHash_CryptoPP(pmidstate, pdata + 64, phash1,
-                                            (char*)&hash, nHashesDone);
-
-            // Check if something found
-            if (nNonceFound != (unsigned int) -1)
+            uint256 thash;
+            char scratchpad[SCRYPT_SCRATCHPAD_SIZE];
+            loop
             {
-                for (unsigned int i = 0; i < sizeof(hash)/4; i++)
-                    ((unsigned int*)&hash)[i] = ByteReverse(((unsigned int*)&hash)[i]);
+                scrypt_1024_1_1_256_sp(BEGIN(pblock->nVersion), BEGIN(thash), scratchpad);
 
-                if (hash <= hashTarget)
+                if (thash <= hashTarget)
                 {
                     // Found a solution
-                    pblock->nNonce = ByteReverse(nNonceFound);
-                    assert(hash == pblock->GetHash());
-
                     SetThreadPriority(THREAD_PRIORITY_NORMAL);
                     CheckWork(pblock.get(), *pwalletMain, reservekey);
                     SetThreadPriority(THREAD_PRIORITY_LOWEST);
                     break;
                 }
+                pblock->nNonce += 1;
+                nHashesDone += 1;
+                if ((pblock->nNonce & 0xFF) == 0)
+                    break;
             }
 
             // Meter hashes/sec
@@ -4692,10 +3754,12 @@ void static FreicoinMiner(CWallet *pwallet)
                         dHashesPerSec = 1000.0 * nHashCounter / (GetTimeMillis() - nHPSTimerStart);
                         nHPSTimerStart = GetTimeMillis();
                         nHashCounter = 0;
+                        string strStatus = strprintf("    %.0f khash/s", dHashesPerSec/1000.0);
                         static int64 nLogTime;
                         if (GetTime() - nLogTime > 30 * 60)
                         {
                             nLogTime = GetTime();
+                            printf("%s ", DateTimeStrFormat("%x %H:%M", GetTime()).c_str());
                             printf("hashmeter %3d CPUs %6.0f khash/s\n", vnThreadsRunning[THREAD_MINER], dHashesPerSec/1000.0);
                         }
                     }
@@ -4705,13 +3769,13 @@ void static FreicoinMiner(CWallet *pwallet)
             // Check for stop or if block needs to be rebuilt
             if (fShutdown)
                 return;
-            if (!fGenerateFreicoins)
+            if (!fGenerateBitcoins)
                 return;
             if (fLimitProcessors && vnThreadsRunning[THREAD_MINER] > nLimitProcessors)
                 return;
             if (vNodes.empty())
                 break;
-            if (nBlockNonce >= 0xffff0000)
+            if (pblock->nNonce >= 0xffff0000)
                 break;
             if (nTransactionsUpdated != nTransactionsUpdatedLast && GetTime() - nStart > 60)
                 break;
@@ -4731,35 +3795,35 @@ void static FreicoinMiner(CWallet *pwallet)
     }
 }
 
-void static ThreadFreicoinMiner(void* parg)
+void static ThreadBitcoinMiner(void* parg)
 {
     CWallet* pwallet = (CWallet*)parg;
     try
     {
         vnThreadsRunning[THREAD_MINER]++;
-        FreicoinMiner(pwallet);
+        BitcoinMiner(pwallet);
         vnThreadsRunning[THREAD_MINER]--;
     }
     catch (std::exception& e) {
         vnThreadsRunning[THREAD_MINER]--;
-        PrintException(&e, "ThreadFreicoinMiner()");
+        PrintException(&e, "ThreadBitcoinMiner()");
     } catch (...) {
         vnThreadsRunning[THREAD_MINER]--;
-        PrintException(NULL, "ThreadFreicoinMiner()");
+        PrintException(NULL, "ThreadBitcoinMiner()");
     }
     nHPSTimerStart = 0;
     if (vnThreadsRunning[THREAD_MINER] == 0)
         dHashesPerSec = 0;
-    printf("ThreadFreicoinMiner exiting, %d threads remaining\n", vnThreadsRunning[THREAD_MINER]);
+    printf("ThreadBitcoinMiner exiting, %d threads remaining\n", vnThreadsRunning[THREAD_MINER]);
 }
 
 
-void GenerateFreicoins(bool fGenerate, CWallet* pwallet)
+void GenerateBitcoins(bool fGenerate, CWallet* pwallet)
 {
-    fGenerateFreicoins = fGenerate;
+    fGenerateBitcoins = fGenerate;
     nLimitProcessors = GetArg("-genproclimit", -1);
     if (nLimitProcessors == 0)
-        fGenerateFreicoins = false;
+        fGenerateBitcoins = false;
     fLimitProcessors = (nLimitProcessors != -1);
 
     if (fGenerate)
@@ -4771,11 +3835,11 @@ void GenerateFreicoins(bool fGenerate, CWallet* pwallet)
         if (fLimitProcessors && nProcessors > nLimitProcessors)
             nProcessors = nLimitProcessors;
         int nAddThreads = nProcessors - vnThreadsRunning[THREAD_MINER];
-        printf("Starting %d FreicoinMiner threads\n", nAddThreads);
+        printf("Starting %d BitcoinMiner threads\n", nAddThreads);
         for (int i = 0; i < nAddThreads; i++)
         {
-            if (!NewThread(ThreadFreicoinMiner, pwallet))
-                printf("Error: NewThread(ThreadFreicoinMiner) failed\n");
+            if (!CreateThread(ThreadBitcoinMiner, pwallet))
+                printf("Error: CreateThread(ThreadBitcoinMiner) failed\n");
             Sleep(10);
         }
     }

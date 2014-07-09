@@ -64,10 +64,10 @@
         <string>Send to multiple recipients at once</string>
        </property>
        <property name="text">
-        <string>Add &amp;Recipient</string>
+        <string>&amp;Add Recipient</string>
        </property>
        <property name="icon">
-        <iconset resource="../freicoin.qrc">
+        <iconset resource="../bitcoin.qrc">
          <normaloff>:/icons/add</normaloff>:/icons/add</iconset>
        </property>
        <property name="autoDefault">
@@ -87,10 +87,10 @@
         <string>Remove all transaction fields</string>
        </property>
        <property name="text">
-        <string>&amp;Clear All</string>
+        <string>Clear &amp;All</string>
        </property>
        <property name="icon">
-        <iconset resource="../freicoin.qrc">
+        <iconset resource="../bitcoin.qrc">
          <normaloff>:/icons/remove</normaloff>:/icons/remove</iconset>
        </property>
        <property name="autoRepeatDelay">
@@ -119,7 +119,7 @@
           <cursorShape>IBeamCursor</cursorShape>
          </property>
          <property name="text">
-          <string>123.456 FRC</string>
+          <string>123.456 SMC</string>
          </property>
          <property name="textInteractionFlags">
           <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
@@ -153,10 +153,10 @@
         <string>Confirm the send action</string>
        </property>
        <property name="text">
-        <string>S&amp;end</string>
+        <string>&amp;Send</string>
        </property>
        <property name="icon">
-        <iconset resource="../freicoin.qrc">
+        <iconset resource="../bitcoin.qrc">
          <normaloff>:/icons/send</normaloff>:/icons/send</iconset>
        </property>
        <property name="default">
@@ -169,7 +169,7 @@
   </layout>
  </widget>
  <resources>
-  <include location="../freicoin.qrc"/>
+  <include location="../bitcoin.qrc"/>
  </resources>
  <connections/>
 </ui>

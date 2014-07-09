@@ -1,8 +1,6 @@
 #ifndef SENDCOINSDIALOG_H
 #define SENDCOINSDIALOG_H
 
-#include "bignum.h" // for mpq
-
 #include <QDialog>
 
 namespace Ui {
@@ -16,7 +14,7 @@ QT_BEGIN_NAMESPACE
 class QUrl;
 QT_END_NAMESPACE
 
-/** Dialog for sending freicoins */
+/** Dialog for sending bitcoins */
 class SendCoinsDialog : public QDialog
 {
     Q_OBJECT
@@ -27,7 +25,7 @@ public:
 
     void setModel(WalletModel *model);
 
-    /** Set up the tab chain manually, as Qt messes up the tab chain by default in some cases (issue https://bugreports.qt-project.org/browse/QTBUG-10907).
+    /** Set up the tab chain manually, as Qt messes up the tab chain by default in some cases (issue http://bugreports.qt.nokia.com/browse/QTBUG-10907).
      */
     QWidget *setupTabChain(QWidget *prev);
 
@@ -40,7 +38,7 @@ public slots:
     void accept();
     SendCoinsEntry *addEntry();
     void updateRemoveEnabled();
-    void setBalance(const mpq& balance, const mpq& unconfirmedBalance, const mpq& immatureBalance);
+    void setBalance(qint64 balance, qint64 unconfirmedBalance, qint64 immatureBalance);
 
 private:
     Ui::SendCoinsDialog *ui;

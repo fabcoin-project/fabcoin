@@ -1,9 +1,10 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
+// Copyright (c) 2011-2012 Fabcoin Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef FREICOIN_SERIALIZE_H
-#define FREICOIN_SERIALIZE_H
+#ifndef BITCOIN_SERIALIZE_H
+#define BITCOIN_SERIALIZE_H
 
 #include <string>
 #include <vector>
@@ -243,6 +244,7 @@ uint64 ReadCompactSize(Stream& is)
 #define FLATDATA(obj)   REF(CFlatData((char*)&(obj), (char*)&(obj) + sizeof(obj)))
 
 /** Wrapper for serializing arrays and POD.
+ * There's a clever template way to make arrays serialize normally, but MSVC6 doesn't support it.
  */
 class CFlatData
 {
@@ -277,18 +279,6 @@ public:
 //
 // Forward declarations
 //
-
-#include <gmpxx.h>
-// mpz
-typedef mpz_class mpz;
-unsigned int GetSerializeSize(const mpz& str, int, int=0);
-template<typename Stream> void Serialize(Stream& os, const mpz& str, int, int=0);
-template<typename Stream> void Unserialize(Stream& is, mpz& str, int, int=0);
-// mpq
-typedef mpq_class mpq;
-unsigned int GetSerializeSize(const mpq& str, int, int=0);
-template<typename Stream> void Serialize(Stream& os, const mpq& str, int, int=0);
-template<typename Stream> void Unserialize(Stream& is, mpq& str, int, int=0);
 
 // string
 template<typename C> unsigned int GetSerializeSize(const std::basic_string<C>& str, int, int=0);
@@ -1020,6 +1010,57 @@ public:
         return (*this);
     }
 };
+
+#ifdef TESTCDATASTREAM
+// VC6sp6
+// CDataStream:
+// n=1000       0 seconds
+// n=2000       0 seconds
+// n=4000       0 seconds
+// n=8000       0 seconds
+// n=16000      0 seconds
+// n=32000      0 seconds
+// n=64000      1 seconds
+// n=128000     1 seconds
+// n=256000     2 seconds
+// n=512000     4 seconds
+// n=1024000    8 seconds
+// n=2048000    16 seconds
+// n=4096000    32 seconds
+// stringstream:
+// n=1000       1 seconds
+// n=2000       1 seconds
+// n=4000       13 seconds
+// n=8000       87 seconds
+// n=16000      400 seconds
+// n=32000      1660 seconds
+// n=64000      6749 seconds
+// n=128000     27241 seconds
+// n=256000     109804 seconds
+#include <iostream>
+int main(int argc, char *argv[])
+{
+    vector<unsigned char> vch(0xcc, 250);
+    printf("CDataStream:\n");
+    for (int n = 1000; n <= 4500000; n *= 2)
+    {
+        CDataStream ss;
+        time_t nStart = time(NULL);
+        for (int i = 0; i < n; i++)
+            ss.write((char*)&vch[0], vch.size());
+        printf("n=%-10d %d seconds\n", n, time(NULL) - nStart);
+    }
+    printf("stringstream:\n");
+    for (int n = 1000; n <= 4500000; n *= 2)
+    {
+        stringstream ss;
+        time_t nStart = time(NULL);
+        for (int i = 0; i < n; i++)
+            ss.write((char*)&vch[0], vch.size());
+        printf("n=%-10d %d seconds\n", n, time(NULL) - nStart);
+    }
+}
+#endif
 
 
 

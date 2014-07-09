@@ -6,7 +6,7 @@
 #include "walletmodel.h"
 #include "optionsmodel.h"
 #include "addresstablemodel.h"
-#include "freicoinunits.h"
+#include "bitcoinunits.h"
 
 #include "wallet.h"
 #include "ui_interface.h"
@@ -19,13 +19,12 @@
 #include <QDateTime>
 #include <QtAlgorithms>
 
-// Amount and RefHeight columns are right-aligned as they contain numbers
+// Amount column is right-aligned it contains numbers
 static int column_alignments[] = {
         Qt::AlignLeft|Qt::AlignVCenter,
         Qt::AlignLeft|Qt::AlignVCenter,
         Qt::AlignLeft|Qt::AlignVCenter,
         Qt::AlignLeft|Qt::AlignVCenter,
-        Qt::AlignRight|Qt::AlignVCenter,
         Qt::AlignRight|Qt::AlignVCenter
     };
 
@@ -224,7 +223,7 @@ TransactionTableModel::TransactionTableModel(CWallet* wallet, WalletModel *paren
         priv(new TransactionTablePriv(wallet, this)),
         cachedNumBlocks(0)
 {
-    columns << QString() << tr("Date") << tr("Type") << tr("Address") << tr("Amount") << tr("Ref-height");
+    columns << QString() << tr("Date") << tr("Type") << tr("Address") << tr("Amount");
 
     priv->refreshWallet();
 
@@ -393,11 +392,11 @@ QString TransactionTableModel::formatTxToAddress(const TransactionRecord *wtx, b
         return QString::fromStdString(wtx->address);
     case TransactionRecord::RecvWithAddress:
     case TransactionRecord::SendToAddress:
-    case TransactionRecord::Generated:
         return lookupAddress(wtx->address, tooltip);
     case TransactionRecord::SendToOther:
         return QString::fromStdString(wtx->address);
     case TransactionRecord::SendToSelf:
+    case TransactionRecord::Generated:
     default:
         return tr("(n/a)");
     }
@@ -410,13 +409,13 @@ QVariant TransactionTableModel::addressColor(const TransactionRecord *wtx) const
     {
     case TransactionRecord::RecvWithAddress:
     case TransactionRecord::SendToAddress:
-    case TransactionRecord::Generated:
         {
         QString label = walletModel->getAddressTableModel()->labelForAddress(QString::fromStdString(wtx->address));
         if(label.isEmpty())
             return COLOR_BAREADDRESS;
         } break;
     case TransactionRecord::SendToSelf:
+    case TransactionRecord::Generated:
         return COLOR_BAREADDRESS;
     default:
         break;
@@ -426,9 +425,7 @@ QVariant TransactionTableModel::addressColor(const TransactionRecord *wtx) const
 
 QString TransactionTableModel::formatTxAmount(const TransactionRecord *wtx, bool showUnconfirmed) const
 {
-    mpq qNet = wtx->credit + wtx->debit;
-    qNet = RoundAbsolute(qNet, ROUND_TOWARDS_ZERO);
-    QString str = FreicoinUnits::format(walletModel->getOptionsModel()->getDisplayUnit(), qNet);
+    QString str = BitcoinUnits::format(walletModel->getOptionsModel()->getDisplayUnit(), wtx->credit + wtx->debit);
     if(showUnconfirmed)
     {
         if(!wtx->status.confirmed || wtx->status.maturity != TransactionStatus::Mature)
@@ -437,11 +434,6 @@ QString TransactionTableModel::formatTxAmount(const TransactionRecord *wtx, bool
         }
     }
     return QString(str);
-}
-
-QString TransactionTableModel::formatTxRefHeight(const TransactionRecord *wtx) const
-{
-    return QString("%1").arg(wtx->refheight);
 }
 
 QVariant TransactionTableModel::txStatusDecoration(const TransactionRecord *wtx) const
@@ -528,8 +520,6 @@ QVariant TransactionTableModel::data(const QModelIndex &index, int role) const
             return formatTxToAddress(rec, false);
         case Amount:
             return formatTxAmount(rec);
-        case RefHeight:
-            return formatTxRefHeight(rec);
         }
         break;
     case Qt::EditRole:
@@ -545,13 +535,7 @@ QVariant TransactionTableModel::data(const QModelIndex &index, int role) const
         case ToAddress:
             return formatTxToAddress(rec, true);
         case Amount:
-            {
-                mpq q = rec->credit + rec->debit;
-                q = RoundAbsolute(q, ROUND_TOWARDS_ZERO);
-                return QString::fromStdString(FormatMoney(q));
-            }
-        case RefHeight:
-            return rec->refheight;
+            return rec->credit + rec->debit;
         }
         break;
     case Qt::ToolTipRole:
@@ -564,12 +548,9 @@ QVariant TransactionTableModel::data(const QModelIndex &index, int role) const
         {
             return COLOR_UNCONFIRMED;
         }
+        if(index.column() == Amount && (rec->credit+rec->debit) < 0)
         {
-            mpq q = rec->credit + rec->debit;
-            if(index.column() == Amount && q < 0)
-            {
-                return COLOR_NEGATIVE;
-            }
+            return COLOR_NEGATIVE;
         }
         if(index.column() == ToAddress)
         {
@@ -587,13 +568,7 @@ QVariant TransactionTableModel::data(const QModelIndex &index, int role) const
     case LabelRole:
         return walletModel->getAddressTableModel()->labelForAddress(QString::fromStdString(rec->address));
     case AmountRole:
-        {
-            mpq q = rec->credit + rec->debit;
-            q = RoundAbsolute(q, ROUND_TOWARDS_ZERO);
-            return QString::fromStdString(FormatMoney(q));
-        }
-    case RefHeightRole:
-        return rec->refheight;
+        return rec->credit + rec->debit;
     case TxIDRole:
         return QString::fromStdString(rec->getTxID());
     case ConfirmedRole:
@@ -631,8 +606,6 @@ QVariant TransactionTableModel::headerData(int section, Qt::Orientation orientat
                 return tr("Destination address of transaction.");
             case Amount:
                 return tr("Amount removed from or added to balance.");
-            case RefHeight:
-                return tr("Reference block number that amount is pegged to.");
             }
         }
     }

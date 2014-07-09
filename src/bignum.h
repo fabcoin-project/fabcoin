@@ -1,25 +1,16 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
+// Copyright (c) 2011-2012 Fabcoin Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef FREICOIN_BIGNUM_H
-#define FREICOIN_BIGNUM_H
+#ifndef BITCOIN_BIGNUM_H
+#define BITCOIN_BIGNUM_H
 
 #include <stdexcept>
 #include <vector>
 #include <openssl/bn.h>
 
-#include <stdint.h>
-#define MPFR_USE_INTMAX_T
-#include <mpfr.h>
-#include <gmp.h>
-#include <gmpxx.h>
-
-typedef mpz_class mpz;
-typedef mpq_class mpq;
-
 #include "util.h" // for uint64
-#include "version.h" // for PROTOCOL_VERSION
 
 /** Errors thrown by the bignum class */
 class bignum_error : public std::runtime_error
@@ -105,18 +96,6 @@ public:
     {
         BN_init(this);
         setvch(vch);
-    }
-
-    explicit CBigNum(const mpz& z)
-    {
-        std::vector<unsigned char> vch;
-        BN_init(this);
-        SetHex(z.get_str(16));
-    }
-
-    mpz get_mpz() const
-    {
-        return mpz(ToString());
     }
 
     void setulong(unsigned long n)
@@ -327,7 +306,7 @@ public:
             psz++;
 
         // hex string to bignum
-        static const signed char phexdigit[256] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,1,2,3,4,5,6,7,8,9,0,0,0,0,0,0, 0,0xa,0xb,0xc,0xd,0xe,0xf,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0xa,0xb,0xc,0xd,0xe,0xf,0,0,0,0,0,0,0,0,0 };
+        static signed char phexdigit[256] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,1,2,3,4,5,6,7,8,9,0,0,0,0,0,0, 0,0xa,0xb,0xc,0xd,0xe,0xf,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0xa,0xb,0xc,0xd,0xe,0xf,0,0,0,0,0,0,0,0,0 };
         *this = 0;
         while (isxdigit(*psz))
         {
@@ -438,7 +417,7 @@ public:
     CBigNum& operator>>=(unsigned int shift)
     {
         // Note: BN_rshift segfaults on 64-bit if 2^shift is greater than the number
-        //   if built on ubuntu 9.04 or 9.10, probably depends on version of OpenSSL
+        //   if built on ubuntu 9.04 or 9.10, probably depends on version of openssl
         CBigNum a = 1;
         a <<= shift;
         if (BN_cmp(&a, this) > 0)
@@ -566,46 +545,5 @@ inline bool operator<=(const CBigNum& a, const CBigNum& b) { return (BN_cmp(&a, 
 inline bool operator>=(const CBigNum& a, const CBigNum& b) { return (BN_cmp(&a, &b) >= 0); }
 inline bool operator<(const CBigNum& a, const CBigNum& b)  { return (BN_cmp(&a, &b) < 0); }
 inline bool operator>(const CBigNum& a, const CBigNum& b)  { return (BN_cmp(&a, &b) > 0); }
-
-inline unsigned int GetSerializeSize(const mpz& a, int nType, int nVersion)
-{
-    return CBigNum(a).GetSerializeSize(nType, nVersion);
-}
-template<typename Stream>
-inline void Serialize(Stream& s, const mpz& a, int nType, int nVersion)
-{
-    CBigNum(a).Serialize(s, nType, nVersion);
-}
-template<typename Stream>
-inline void Unserialize(Stream& s, mpz& a, int nType, int nVersion)
-{
-    CBigNum bn;
-    bn.Unserialize(s, nType, nVersion);
-    a = bn.get_mpz();
-}
-
-inline unsigned int GetSerializeSize(const mpq& a, int nType, int nVersion)
-{
-    mpq q(a);
-    q.canonicalize();
-    return GetSerializeSize(q.get_num(), nType, nVersion) +
-           GetSerializeSize(q.get_den(), nType, nVersion);
-}
-template<typename Stream>
-inline void Serialize(Stream& s, const mpq& a, int nType, int nVersion)
-{
-    mpq q(a);
-    q.canonicalize();
-    Serialize(s, q.get_num(), nType, nVersion);
-    Serialize(s, q.get_den(), nType, nVersion);
-}
-template<typename Stream>
-inline void Unserialize(Stream& s, mpq& a, int nType, int nVersion)
-{
-    mpq r;
-    Unserialize(s, r.get_num(), nType, nVersion);
-    Unserialize(s, r.get_den(), nType, nVersion);
-    r.canonicalize(); a = r;
-}
 
 #endif

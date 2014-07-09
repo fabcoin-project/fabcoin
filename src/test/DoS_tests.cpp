@@ -37,7 +37,7 @@ BOOST_AUTO_TEST_CASE(DoS_banning)
     CNode dummyNode1(INVALID_SOCKET, addr1, "", true);
     dummyNode1.Misbehaving(100); // Should get banned
     BOOST_CHECK(CNode::IsBanned(addr1));
-    BOOST_CHECK(!CNode::IsBanned(ip(0xa0b0c001|0x0000ff00))); // Different IP, not banned
+    BOOST_CHECK(!CNode::IsBanned(ip(0xa0b0c001|0x0000ff00))); // Different ip, not banned
 
     CAddress addr2(ip(0xa0b0c002));
     CNode dummyNode2(INVALID_SOCKET, addr2, "", true);
@@ -99,7 +99,7 @@ BOOST_AUTO_TEST_CASE(DoS_checknbits)
 {
     using namespace boost::assign; // for 'map_list_of()'
 
-    // Timestamps,nBits from the freicoin blockchain.
+    // Timestamps,nBits from the bitcoin blockchain.
     // These are the block-chain checkpoint blocks
     typedef std::map<int64, unsigned int> BlockData;
     BlockData chainData =
@@ -160,7 +160,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         tx.vin[0].prevout.hash = GetRandHash();
         tx.vin[0].scriptSig << OP_1;
         tx.vout.resize(1);
-        tx.vout[0].SetInitialValue(mpq(1*CENT));
+        tx.vout[0].nValue = 1*CENT;
         tx.vout[0].scriptPubKey.SetDestination(key.GetPubKey().GetID());
 
         CDataStream ds(SER_DISK, CLIENT_VERSION);
@@ -178,7 +178,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         tx.vin[0].prevout.n = 0;
         tx.vin[0].prevout.hash = txPrev.GetHash();
         tx.vout.resize(1);
-        tx.vout[0].SetInitialValue(mpq(1*CENT));
+        tx.vout[0].nValue = 1*CENT;
         tx.vout[0].scriptPubKey.SetDestination(key.GetPubKey().GetID());
         SignSignature(keystore, txPrev, tx, 0);
 
@@ -194,7 +194,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 
         CTransaction tx;
         tx.vout.resize(1);
-        tx.vout[0].SetInitialValue(mpq(1*CENT));
+        tx.vout[0].nValue = 1*CENT;
         tx.vout[0].scriptPubKey.SetDestination(key.GetPubKey().GetID());
         tx.vin.resize(500);
         for (unsigned int j = 0; j < tx.vin.size(); j++)
@@ -243,7 +243,7 @@ BOOST_AUTO_TEST_CASE(DoS_checkSig)
         tx.vin[0].prevout.hash = GetRandHash();
         tx.vin[0].scriptSig << OP_1;
         tx.vout.resize(1);
-        tx.vout[0].SetInitialValue(mpq(1*CENT));
+        tx.vout[0].nValue = 1*CENT;
         tx.vout[0].scriptPubKey.SetDestination(key.GetPubKey().GetID());
 
         CDataStream ds(SER_DISK, CLIENT_VERSION);
@@ -254,7 +254,7 @@ BOOST_AUTO_TEST_CASE(DoS_checkSig)
     // Create a transaction that depends on orphans:
     CTransaction tx;
     tx.vout.resize(1);
-    tx.vout[0].SetInitialValue(mpq(1*CENT));
+    tx.vout[0].nValue = 1*CENT;
     tx.vout[0].scriptPubKey.SetDestination(key.GetPubKey().GetID());
     tx.vin.resize(NPREV);
     for (unsigned int j = 0; j < tx.vin.size(); j++)

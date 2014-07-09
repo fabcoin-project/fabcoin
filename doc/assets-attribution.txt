@@ -1,3 +1,7 @@
+Code: src/strlcpy.h
+Author: Todd C. Miller <Todd.Miller@courtesan.com>
+License: ISC
+
 Icon: src/qt/res/icons/clock*.png, src/qt/res/icons/tx*.png,
       src/qt/res/src/*.svg
 Designer: Wladimir van der Laan
@@ -25,7 +29,6 @@ Designer: md2k7
 Site: https://bitcointalk.org/index.php?topic=15276.0
 License: You are free to do with these icons as you wish, including selling,
  copying, modifying etc.
-License: MIT
 
 Icon: src/qt/res/icons/configure.png, src/qt/res/icons/quit.png,
       src/qt/res/icons/editcopy.png, src/qt/res/icons/editpaste.png,
@@ -35,10 +38,10 @@ Designer: http://www.everaldo.com
 Icon Pack: Crystal SVG
 License: LGPL
 
-Icon: src/qt/res/icons/freicoin.png, src/qt/res/icons/toolbar.png
-Designer: Bitboy (optimized for 16x16 by Wladimir van der Laan)
+Icon: src/qt/res/icons/bitcoin.png, src/qt/res/icons/toolbar.png
+Designer: BitcoinPorn (forum)
 License: Public Domain
-Site: https://bitcointalk.org/?topic=1756.0
+Site: https://bitcointalk.org/index.php?topic=47417.msg591988#msg591988
 
 Icon:  scripts/img/reload.xcf (modified),src/qt/res/movies/update_spinner.mng
 Icon Pack: Kids
@@ -47,8 +50,8 @@ License: GNU/GPL
 Site: http://findicons.com/icon/17102/reload?id=17102
 
 Image: src/qt/res/images/splash2.jpg (Wallet image)
-Designer: Crobbo (forum)
-Site: https://bitcointalk.org/index.php?topic=32273.0
+Designer: Crobbo (forum), adapted to Fabcoin by BitcoinPorn (forum)
+Site: https://bitcointalk.org/index.php?topic=32273.0, https://bitcointalk.org/index.php?topic=47417.msg591988#msg591988
 License: Public domain
 
 Icon: src/qt/res/icons/debugwindow.png

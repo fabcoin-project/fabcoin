@@ -36,19 +36,19 @@ WalletModel::~WalletModel()
     unsubscribeFromCoreSignals();
 }
 
-mpq WalletModel::getBalance(int nBlockHeight) const
+qint64 WalletModel::getBalance() const
 {
-    return wallet->GetBalance(nBlockHeight);
+    return wallet->GetBalance();
 }
 
-mpq WalletModel::getUnconfirmedBalance(int nBlockHeight) const
+qint64 WalletModel::getUnconfirmedBalance() const
 {
-    return wallet->GetUnconfirmedBalance(nBlockHeight);
+    return wallet->GetUnconfirmedBalance();
 }
 
-mpq WalletModel::getImmatureBalance(int nBlockHeight) const
+qint64 WalletModel::getImmatureBalance() const
 {
-    return wallet->GetImmatureBalance(nBlockHeight);
+    return wallet->GetImmatureBalance();
 }
 
 int WalletModel::getNumTransactions() const
@@ -81,9 +81,9 @@ void WalletModel::pollBalanceChanged()
 
 void WalletModel::checkBalanceChanged()
 {
-    mpq newBalance = getBalance(nBestHeight);
-    mpq newUnconfirmedBalance = getUnconfirmedBalance(nBestHeight);
-    mpq newImmatureBalance = getImmatureBalance(nBestHeight);
+    qint64 newBalance = getBalance();
+    qint64 newUnconfirmedBalance = getUnconfirmedBalance();
+    qint64 newImmatureBalance = getImmatureBalance();
 
     if(cachedBalance != newBalance || cachedUnconfirmedBalance != newUnconfirmedBalance || cachedImmatureBalance != newImmatureBalance)
     {
@@ -118,13 +118,13 @@ void WalletModel::updateAddressBook(const QString &address, const QString &label
 
 bool WalletModel::validateAddress(const QString &address)
 {
-    CFreicoinAddress addressParsed(address.toStdString());
+    CBitcoinAddress addressParsed(address.toStdString());
     return addressParsed.IsValid();
 }
 
-WalletModel::SendCoinsReturn WalletModel::sendCoins(const QList<SendCoinsRecipient> &recipients, int nRefHeight)
+WalletModel::SendCoinsReturn WalletModel::sendCoins(const QList<SendCoinsRecipient> &recipients)
 {
-    mpq total = 0;
+    qint64 total = 0;
     QSet<QString> setAddress;
     QString hex;
 
@@ -132,9 +132,6 @@ WalletModel::SendCoinsReturn WalletModel::sendCoins(const QList<SendCoinsRecipie
     {
         return OK;
     }
-
-    if ( nRefHeight < 0 )
-        nRefHeight = nBestHeight;
 
     // Pre-check input data for validity
     foreach(const SendCoinsRecipient &rcp, recipients)
@@ -157,13 +154,12 @@ WalletModel::SendCoinsReturn WalletModel::sendCoins(const QList<SendCoinsRecipie
         return DuplicateAddress;
     }
 
-    if(total > getBalance(nRefHeight))
+    if(total > getBalance())
     {
         return AmountExceedsBalance;
     }
 
-    mpq qBalReq = total + nTransactionFee;
-    if(qBalReq > getBalance(nRefHeight))
+    if((total + nTransactionFee) > getBalance())
     {
         return SendCoinsReturn(AmountWithFeeExceedsBalance, nTransactionFee);
     }
@@ -172,22 +168,22 @@ WalletModel::SendCoinsReturn WalletModel::sendCoins(const QList<SendCoinsRecipie
         LOCK2(cs_main, wallet->cs_wallet);
 
         // Sendmany
-        std::vector<std::pair<CScript, mpq> > vecSend;
+        std::vector<std::pair<CScript, int64> > vecSend;
         foreach(const SendCoinsRecipient &rcp, recipients)
         {
             CScript scriptPubKey;
-            scriptPubKey.SetDestination(CFreicoinAddress(rcp.address.toStdString()).Get());
+            scriptPubKey.SetDestination(CBitcoinAddress(rcp.address.toStdString()).Get());
             vecSend.push_back(make_pair(scriptPubKey, rcp.amount));
         }
 
         CWalletTx wtx;
         CReserveKey keyChange(wallet);
-        mpq nFeeRequired = 0;
-        bool fCreated = wallet->CreateTransaction(vecSend, nRefHeight, wtx, keyChange, nFeeRequired);
+        int64 nFeeRequired = 0;
+        bool fCreated = wallet->CreateTransaction(vecSend, wtx, keyChange, nFeeRequired);
 
         if(!fCreated)
         {
-            if(qBalReq > wallet->GetBalance(nRefHeight))
+            if((total + nFeeRequired) > wallet->GetBalance())
             {
                 return SendCoinsReturn(AmountWithFeeExceedsBalance, nFeeRequired);
             }
@@ -208,7 +204,7 @@ WalletModel::SendCoinsReturn WalletModel::sendCoins(const QList<SendCoinsRecipie
     foreach(const SendCoinsRecipient &rcp, recipients)
     {
         std::string strAddress = rcp.address.toStdString();
-        CTxDestination dest = CFreicoinAddress(strAddress).Get();
+        CTxDestination dest = CBitcoinAddress(strAddress).Get();
         std::string strLabel = rcp.label.toStdString();
         {
             LOCK(wallet->cs_wallet);
@@ -310,9 +306,9 @@ static void NotifyKeyStoreStatusChanged(WalletModel *walletmodel, CCryptoKeyStor
 
 static void NotifyAddressBookChanged(WalletModel *walletmodel, CWallet *wallet, const CTxDestination &address, const std::string &label, bool isMine, ChangeType status)
 {
-    OutputDebugStringF("NotifyAddressBookChanged %s %s isMine=%i status=%i\n", CFreicoinAddress(address).ToString().c_str(), label.c_str(), isMine, status);
+    OutputDebugStringF("NotifyAddressBookChanged %s %s isMine=%i status=%i\n", CBitcoinAddress(address).ToString().c_str(), label.c_str(), isMine, status);
     QMetaObject::invokeMethod(walletmodel, "updateAddressBook", Qt::QueuedConnection,
-                              Q_ARG(QString, QString::fromStdString(CFreicoinAddress(address).ToString())),
+                              Q_ARG(QString, QString::fromStdString(CBitcoinAddress(address).ToString())),
                               Q_ARG(QString, QString::fromStdString(label)),
                               Q_ARG(bool, isMine),
                               Q_ARG(int, status));

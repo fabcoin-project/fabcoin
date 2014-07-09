@@ -1,10 +1,9 @@
 #include "optionsmodel.h"
-#include "freicoinunits.h"
+#include "bitcoinunits.h"
 #include <QSettings>
 
 #include "init.h"
 #include "walletdb.h"
-#include "util.h"
 #include "guiutil.h"
 
 OptionsModel::OptionsModel(QObject *parent) :
@@ -42,14 +41,14 @@ void OptionsModel::Init()
     QSettings settings;
 
     // These are Qt-only settings:
-    nDisplayUnit = settings.value("nDisplayUnit", FreicoinUnits::FRC).toInt();
+    nDisplayUnit = settings.value("nDisplayUnit", BitcoinUnits::BTC).toInt();
     bDisplayAddresses = settings.value("bDisplayAddresses", false).toBool();
     fMinimizeToTray = settings.value("fMinimizeToTray", false).toBool();
     fMinimizeOnClose = settings.value("fMinimizeOnClose", false).toBool();
-    nTransactionFee = i64_to_mpq(settings.value("nTransactionFee").toLongLong());
+    nTransactionFee = settings.value("nTransactionFee").toLongLong();
     language = settings.value("language", "").toString();
 
-    // These are shared with core Freicoin; we want
+    // These are shared with core Bitcoin; we want
     // command-line options to override the GUI settings:
     if (settings.contains("fUseUPnP"))
         SoftSetBoolArg("-upnp", settings.value("fUseUPnP").toBool());
@@ -146,23 +145,23 @@ QVariant OptionsModel::data(const QModelIndex & index, int role) const
         case ProxyUse:
             return settings.value("fUseProxy", false);
         case ProxyIP: {
-            proxyType proxy;
-            if (GetProxy(NET_IPV4, proxy))
-                return QVariant(QString::fromStdString(proxy.first.ToStringIP()));
+            CService addrProxy;
+            if (GetProxy(NET_IPV4, addrProxy))
+                return QVariant(QString::fromStdString(addrProxy.ToStringIP()));
             else
                 return QVariant(QString::fromStdString("127.0.0.1"));
         }
         case ProxyPort: {
-            proxyType proxy;
-            if (GetProxy(NET_IPV4, proxy))
-                return QVariant(proxy.first.GetPort());
+            CService addrProxy;
+            if (GetProxy(NET_IPV4, addrProxy))
+                return QVariant(addrProxy.GetPort());
             else
-                return QVariant(9050);
+                return 9050;
         }
         case ProxySocksVersion:
             return settings.value("nSocksVersion", 5);
         case Fee:
-            return QVariant(mpz_to_i64(nTransactionFee.get_num() / nTransactionFee.get_den()));
+            return QVariant(nTransactionFee);
         case DisplayUnit:
             return QVariant(nDisplayUnit);
         case DisplayAddresses:
@@ -177,7 +176,6 @@ QVariant OptionsModel::data(const QModelIndex & index, int role) const
     }
     return QVariant();
 }
-
 bool OptionsModel::setData(const QModelIndex & index, const QVariant & value, int role)
 {
     bool successful = true; /* set to false on parse error */
@@ -206,41 +204,32 @@ bool OptionsModel::setData(const QModelIndex & index, const QVariant & value, in
             settings.setValue("fUseProxy", value.toBool());
             ApplyProxySettings();
             break;
-        case ProxyIP: {
-            proxyType proxy;
-            proxy.first = CService("127.0.0.1", 9050);
-            GetProxy(NET_IPV4, proxy);
-
-            CNetAddr addr(value.toString().toStdString());
-            proxy.first.SetIP(addr);
-            settings.setValue("addrProxy", proxy.first.ToStringIPPort().c_str());
-            successful = ApplyProxySettings();
-        }
-        break;
-        case ProxyPort: {
-            proxyType proxy;
-            proxy.first = CService("127.0.0.1", 9050);
-            GetProxy(NET_IPV4, proxy);
-
-            proxy.first.SetPort(value.toInt());
-            settings.setValue("addrProxy", proxy.first.ToStringIPPort().c_str());
-            successful = ApplyProxySettings();
-        }
-        break;
-        case ProxySocksVersion: {
-            proxyType proxy;
-            proxy.second = 5;
-            GetProxy(NET_IPV4, proxy);
-
-            proxy.second = value.toInt();
-            settings.setValue("nSocksVersion", proxy.second);
-            successful = ApplyProxySettings();
-        }
-        break;
+        case ProxyIP:
+            {
+                CService addrProxy("127.0.0.1", 9050);
+                GetProxy(NET_IPV4, addrProxy);
+                CNetAddr addr(value.toString().toStdString());
+                addrProxy.SetIP(addr);
+                settings.setValue("addrProxy", addrProxy.ToStringIPPort().c_str());
+                successful = ApplyProxySettings();
+            }
+            break;
+        case ProxyPort:
+            {
+                CService addrProxy("127.0.0.1", 9050);
+                GetProxy(NET_IPV4, addrProxy);
+                addrProxy.SetPort(value.toInt());
+                settings.setValue("addrProxy", addrProxy.ToStringIPPort().c_str());
+                successful = ApplyProxySettings();
+            }
+            break;
+        case ProxySocksVersion:
+            settings.setValue("nSocksVersion", value.toInt());
+            ApplyProxySettings();
+            break;
         case Fee:
-            nTransactionFee = i64_to_mpq(value.toLongLong());
-            settings.setValue("nTransactionFee",
-                mpz_to_i64(nTransactionFee.get_num() / nTransactionFee.get_den()));
+            nTransactionFee = value.toLongLong();
+            settings.setValue("nTransactionFee", nTransactionFee);
             break;
         case DisplayUnit:
             nDisplayUnit = value.toInt();
@@ -269,7 +258,27 @@ bool OptionsModel::setData(const QModelIndex & index, const QVariant & value, in
     return successful;
 }
 
-mpq OptionsModel::getTransactionFee()
+qint64 OptionsModel::getTransactionFee()
 {
     return nTransactionFee;
+}
+
+bool OptionsModel::getMinimizeToTray()
+{
+    return fMinimizeToTray;
+}
+
+bool OptionsModel::getMinimizeOnClose()
+{
+    return fMinimizeOnClose;
+}
+
+int OptionsModel::getDisplayUnit()
+{
+    return nDisplayUnit;
+}
+
+bool OptionsModel::getDisplayAddresses()
+{
+    return bDisplayAddresses;
 }

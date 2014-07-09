@@ -1,12 +1,13 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2012 The Bitcoin developers
+// Copyright (c) 2012 Fabcoin Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef FREICOIN_UI_INTERFACE_H
-#define FREICOIN_UI_INTERFACE_H
+#ifndef BITCOIN_UI_INTERFACE_H
+#define BITCOIN_UI_INTERFACE_H
 
 #include <string>
-#include "bignum.h" // for mpq
+#include "util.h" // for int64
 #include <boost/signals2/signal.hpp>
 #include <boost/signals2/last_value.hpp>
 
@@ -63,7 +64,7 @@ public:
     boost::signals2::signal<void (const std::string& message, const std::string& caption, int style)> ThreadSafeMessageBox;
 
     /** Ask the user whether they want to pay a fee or not. */
-    boost::signals2::signal<bool (const mpq& nFeeRequired, const std::string& strCaption), boost::signals2::last_value<bool> > ThreadSafeAskFee;
+    boost::signals2::signal<bool (int64 nFeeRequired, const std::string& strCaption), boost::signals2::last_value<bool> > ThreadSafeAskFee;
 
     /** Handle a URL passed at the command line. */
     boost::signals2::signal<void (const std::string& strURI)> ThreadSafeHandleURI;
